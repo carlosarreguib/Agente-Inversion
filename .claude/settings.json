@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-Command uv -ErrorAction SilentlyContinue; if \\(-not $?\\) { Get-ChildItem \"$env:USERPROFILE\\\\.cargo\\\\bin\\\\uv.exe\", \"$env:USERPROFILE\\\\.local\\\\bin\\\\uv.exe\", \"$env:APPDATA\\\\Python\\\\Scripts\\\\uv.exe\", \"C:\\\\Users\\\\CarlosArregui\\\\.local\\\\bin\\\\uv.exe\" -ErrorAction SilentlyContinue })",
+      "Read(//c/Users/CarlosArregui/**)",
+      "PowerShell(python --version)",
+      "PowerShell(python3 --version 2>$null)",
+      "PowerShell(pip install uv 2>&1)",
+      "PowerShell(uv --version)",
+      "PowerShell(uv python list --only-installed 2>&1)",
+      "PowerShell(uv python install 3.12 2>&1)"
+    ]
+  }
+}
