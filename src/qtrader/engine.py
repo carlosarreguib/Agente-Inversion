@@ -85,7 +85,7 @@ def run_demo(
     Señal generada con datos de bars[i] (cierre de T).
     Fill ejecutado al precio de apertura de bars[i+1] (T+1).
     """
-    bars = SyntheticProvider(seed=seed).get_bars(symbol, days + 1)
+    bars = SyntheticProvider(seed=seed).get_bars_n(symbol, days + 1)
 
     ledger = SQLiteLedger(db_path)
     ledger.initialize()

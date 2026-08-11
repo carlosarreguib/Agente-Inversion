@@ -6,6 +6,10 @@ from typing import Annotated, Any
 
 from pydantic import AwareDatetime, BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
+# ---------------------------------------------------------------------------
+# Tipos de datos de mercado — añadidos en T1.1
+# ---------------------------------------------------------------------------
+
 
 def _reject_float(v: Any) -> Any:
     if isinstance(v, float):
@@ -200,6 +204,53 @@ class RiskDecision(BaseModel):
         if self.decision == RiskLevel.REDUCE and self.adjusted_quantity is None:
             raise ValueError("adjusted_quantity is required when decision is REDUCE")
         return self
+
+
+class CorporateActionType(StrEnum):
+    SPLIT = "SPLIT"
+    DIVIDEND = "DIVIDEND"
+    SPIN_OFF = "SPIN_OFF"
+
+
+class CorporateAction(BaseModel):
+    """Corporate action que afecta al precio histórico de un instrumento.
+
+    Para un split N:1, factor = N (los precios anteriores se dividen por N).
+    Para dividendos, factor = (price - dividend) / price.
+    Almacenada por separado de los precios sin ajustar (invariante §3.2).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    action_type: CorporateActionType
+    effective_date: AwareDatetime
+    factor: StrictDecimal  # multiplicador que se aplica a los precios anteriores
+
+    @model_validator(mode="after")
+    def _check_factor(self) -> CorporateAction:
+        if self.factor <= _ZERO:
+            raise ValueError(f"factor must be > 0, got {self.factor}")
+        return self
+
+
+class DataQuality(StrEnum):
+    OK = "OK"
+    SUSPECT = "SUSPECT"
+
+
+class ValidatedBar(BaseModel):
+    """Bar con metadatos de calidad de datos.
+
+    suspect=True cuando dos fuentes difieren > 0.5 % en el cierre.
+    Un bar SUSPECT se excluye del universo ese día y se registra en auditoría.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    bar: Bar
+    quality: DataQuality = DataQuality.OK
+    quality_reason: str = ""
 
 
 class AuditRecord(BaseModel):

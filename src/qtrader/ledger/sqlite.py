@@ -4,10 +4,11 @@ import hashlib
 import json
 import sqlite3
 from contextlib import closing
+from datetime import UTC
 from decimal import Decimal
 from pathlib import Path
 
-from qtrader.core.types import AuditRecord, Fill, Side
+from qtrader.core.types import AuditRecord, CorporateAction, Fill, Side
 
 _NULL_HASH = "0" * 64
 
@@ -41,12 +42,23 @@ CREATE TABLE IF NOT EXISTS audit_log (
     record_hash TEXT NOT NULL,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS corporate_actions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol          TEXT NOT NULL,
+    action_type     TEXT NOT NULL,
+    effective_date  TEXT NOT NULL,
+    factor          TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(symbol, action_type, effective_date)
+);
 """
 
 _DROP = """
 DROP TABLE IF EXISTS fills;
 DROP TABLE IF EXISTS positions;
 DROP TABLE IF EXISTS audit_log;
+DROP TABLE IF EXISTS corporate_actions;
 """
 
 _ZERO = Decimal("0")
@@ -178,6 +190,58 @@ class SQLiteLedger:
             expected_prev_hash = stored_hash
 
         return corrupt
+
+    # ------------------------------------------------------------------
+    # Corporate actions
+    # ------------------------------------------------------------------
+
+    def record_corporate_action(self, action: CorporateAction) -> None:
+        """Persiste una corporate action. Ignora duplicados (mismo symbol+tipo+fecha)."""
+        with closing(sqlite3.connect(self._db_path)) as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO corporate_actions
+                    (symbol, action_type, effective_date, factor)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    action.symbol,
+                    action.action_type.value,
+                    action.effective_date.isoformat(),
+                    str(action.factor),
+                ),
+            )
+            conn.commit()
+
+    def get_corporate_actions(self, symbol: str) -> list[CorporateAction]:
+        """Devuelve todas las corporate actions de symbol, ordenadas por fecha."""
+        from datetime import datetime
+
+        with closing(sqlite3.connect(self._db_path)) as conn:
+            rows = conn.execute(
+                """
+                SELECT symbol, action_type, effective_date, factor
+                FROM corporate_actions
+                WHERE symbol = ?
+                ORDER BY effective_date
+                """,
+                (symbol,),
+            ).fetchall()
+
+        result: list[CorporateAction] = []
+        for row in rows:
+            ts = datetime.fromisoformat(str(row[2]))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+            result.append(
+                CorporateAction(
+                    symbol=str(row[0]),
+                    action_type=str(row[1]),  # type: ignore[arg-type]
+                    effective_date=ts,
+                    factor=Decimal(str(row[3])),
+                )
+            )
+        return result
 
     # ------------------------------------------------------------------
     # Interno

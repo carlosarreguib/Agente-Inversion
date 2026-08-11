@@ -7,7 +7,7 @@ from qtrader.brokers.paper import fill_at_open, fill_at_price
 from qtrader.core.types import Order, OrderType, Side
 from qtrader.data.synthetic import SyntheticProvider
 
-_BARS = SyntheticProvider(seed=99).get_bars("TEST", 30)
+_BARS = SyntheticProvider(seed=99).get_bars_n("TEST", 30)
 
 
 def _order(qty: Decimal = Decimal("2"), side: Side = Side.BUY) -> Order:

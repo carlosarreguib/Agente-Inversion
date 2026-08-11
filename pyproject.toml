@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Plataforma experimental de gestión cuantitativa de cartera (solo simulación)"
 requires-python = "==3.12.*"
 dependencies = [
+    "pandas>=3.0.5",
+    "pyarrow>=25.0.1",
     "pydantic>=2.0,<3",
 ]
 
@@ -17,6 +19,9 @@ dev = [
     "pre-commit>=3.7",
     "pytest>=8.0",
     "ruff>=0.5",
+    "import-linter>=2.13",
+    "pandas-stubs>=3.0.5.260730",
+    "pyarrow-stubs>=20.0.0.20260625",
 ]
 
 [build-system]
@@ -45,3 +50,31 @@ select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "TCH"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.importlinter]
+root_packages = ["qtrader"]
+
+[[tool.importlinter.contracts]]
+name = "data layer does not import execution or agents"
+type = "forbidden"
+source_modules = ["qtrader.data"]
+forbidden_modules = ["qtrader.execution", "qtrader.agents"]
+
+[[tool.importlinter.contracts]]
+name = "risk does not import outside core"
+type = "forbidden"
+source_modules = ["qtrader.risk"]
+forbidden_modules = [
+    "qtrader.data",
+    "qtrader.brokers",
+    "qtrader.ledger",
+    "qtrader.strategies",
+    "qtrader.execution",
+    "qtrader.agents",
+]
+
+[[tool.importlinter.contracts]]
+name = "strategies does not import execution"
+type = "forbidden"
+source_modules = ["qtrader.strategies"]
+forbidden_modules = ["qtrader.execution", "qtrader.agents"]
