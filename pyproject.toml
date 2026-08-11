@@ -7,6 +7,9 @@ dependencies = [
     "pydantic>=2.0,<3",
 ]
 
+[project.scripts]
+qtrader = "qtrader.cli:main"
+
 [dependency-groups]
 dev = [
     "mypy>=1.11",
