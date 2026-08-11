@@ -56,7 +56,14 @@ class RiskLevel(StrEnum):
 
 
 class Bar(BaseModel):
-    """OHLCV diaria. Precios sin ajustar; las corporate actions van en tabla separada."""
+    """OHLCV diaria. Precios sin ajustar; las corporate actions van en tabla separada.
+
+    available_from: fecha desde la que esta barra es visible para las estrategias.
+    Normalmente es la fecha del timestamp (cierre de T disponible al final de T).
+    El motor de backtesting lo usa para detectar look-ahead: si una estrategia
+    solicita una barra con available_from > fecha_actual_del_bucle → LookAheadError.
+    None equivale a timestamp.date() (comportamiento por defecto seguro).
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -67,6 +74,7 @@ class Bar(BaseModel):
     low: StrictDecimal
     close: StrictDecimal
     volume: StrictDecimal
+    available_from: date | None = None  # None → usar timestamp.date() en el motor
 
     @model_validator(mode="after")
     def _check_ohlcv(self) -> Bar:
@@ -83,6 +91,10 @@ class Bar(BaseModel):
         if self.volume < _ZERO:
             raise ValueError(f"volume must be >= 0, got {self.volume}")
         return self
+
+    def effective_available_from(self) -> date:
+        """Fecha efectiva de disponibilidad (resuelve None → timestamp.date())."""
+        return self.available_from if self.available_from is not None else self.timestamp.date()
 
 
 class InstrumentCategory(StrEnum):

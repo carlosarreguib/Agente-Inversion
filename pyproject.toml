@@ -87,3 +87,9 @@ name = "validation does not import ledger or execution"
 type = "forbidden"
 source_modules = ["qtrader.data.validation"]
 forbidden_modules = ["qtrader.ledger", "qtrader.execution", "qtrader.agents"]
+
+[[tool.importlinter.contracts]]
+name = "backtesting does not import agents or real brokers"
+type = "forbidden"
+source_modules = ["qtrader.backtesting"]
+forbidden_modules = ["qtrader.agents", "qtrader.brokers"]
