@@ -126,6 +126,7 @@ class Instrument(BaseModel):
     ticker_ucits: str
     declared_on: date
     instrument_type: InstrumentType = InstrumentType.ETF
+    spread_bps: int | None = None  # override del spread por instrumento (bps)
 
 
 class Signal(BaseModel):

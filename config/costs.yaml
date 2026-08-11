@@ -1,0 +1,27 @@
+# Modelo de costes del motor de backtesting y paper broker.
+# Todos los parámetros monetarios en EUR.
+# Cambiar cualquier valor requiere actualizar el golden backtest (invariante §3.5).
+
+# --- Comisión ---
+commission_rate: 0.0005        # 0.05 % del notional
+min_commission: 1.25           # mínimo por operación (EUR)
+
+# --- Spread (half-spread al cruzar) ---
+# Por categoría de instrumento (bps). Se usa si el instrumento no tiene
+# spread_bps propio en universe.yaml.
+spread_bps_by_category:
+  region:       5
+  sector:       5
+  factor:       5
+  fixed_income: 8
+  alternative:  10
+
+# --- Slippage (impacto de mercado) ---
+slippage_factor: 0.1           # factor conservador para ETFs líquidos
+slippage_bps_fallback: 3       # usado cuando avg_daily_volume no disponible (bps)
+
+# --- Límite de participación ---
+max_participation: 0.10        # 10 % del volumen diario medio
+
+# --- Tamaño mínimo de orden ---
+min_order_eur: 1000.0          # invariante §02-AJUSTES

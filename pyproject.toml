@@ -93,3 +93,9 @@ name = "backtesting does not import agents or real brokers"
 type = "forbidden"
 source_modules = ["qtrader.backtesting"]
 forbidden_modules = ["qtrader.agents", "qtrader.brokers"]
+
+[[tool.importlinter.contracts]]
+name = "costs module does not import execution agents or brokers"
+type = "forbidden"
+source_modules = ["qtrader.costs"]
+forbidden_modules = ["qtrader.agents", "qtrader.brokers", "qtrader.execution", "qtrader.ledger"]

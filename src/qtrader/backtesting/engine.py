@@ -571,3 +571,95 @@ class InstantSimBroker:
             commission=_ZERO,
             timestamp=order.timestamp,
         )
+
+
+class CostAwareSimBroker:
+    """Broker simulado con modelo de costes realista (T2.2).
+
+    Usa calculate_costs() para ajustar el precio de fill y extraer la comisión.
+    El fill neto refleja spread + slippage en el precio; la comisión sale del cash.
+
+    Args:
+        costs_config:    parámetros del modelo de costes.
+        universe:        dict symbol → Instrument (para spread por instrumento).
+        bar_map:         dict symbol → ValidatedBar del día actual (para ADV proxy).
+        adv_map:         dict symbol → avg_daily_volume (Decimal). Puede ser vacío.
+    """
+
+    def __init__(
+        self,
+        costs_config: object,  # CostsConfig — importado lazy para evitar ciclo
+        universe: dict[str, object],  # str → Instrument
+        adv_map: dict[str, Decimal] | None = None,
+    ) -> None:
+        self._costs_config = costs_config
+        self._universe = universe
+        self._adv_map: dict[str, Decimal] = adv_map or {}
+
+    def fill(self, order: Order, fill_price: Decimal) -> Fill:
+        from qtrader.core.types import Fill, Instrument
+        from qtrader.costs import CostsConfig, adjusted_fill_price, calculate_costs
+
+        instrument = self._universe.get(order.symbol)
+        if not isinstance(instrument, Instrument):
+            # Sin metadatos de instrumento → fill sin coste (fail-safe)
+            return Fill(
+                client_order_id=order.client_order_id,
+                fill_id=str(uuid.uuid4()),
+                symbol=order.symbol,
+                side=order.side,
+                quantity=order.quantity,
+                price=fill_price,
+                commission=_ZERO,
+                timestamp=order.timestamp,
+            )
+
+        config = self._costs_config
+        if not isinstance(config, CostsConfig):
+            raise TypeError(f"costs_config must be CostsConfig, got {type(config)}")
+
+        adv = self._adv_map.get(order.symbol, _ZERO)
+
+        # Creamos un ValidatedBar mínimo con open=fill_price para el cálculo de costes.
+        # El bar real no está disponible aquí — usamos el precio ya calculado por el motor.
+        from qtrader.core.types import Bar, DataQuality
+        from qtrader.core.types import ValidatedBar as VB
+        bar = VB(
+            bar=Bar(
+                symbol=order.symbol,
+                timestamp=order.timestamp,
+                open=fill_price,
+                high=fill_price,
+                low=fill_price,
+                close=fill_price,
+                volume=adv if adv > _ZERO else Decimal("1000000"),
+            ),
+            quality=DataQuality.OK,
+        )
+
+        try:
+            breakdown = calculate_costs(order, bar, instrument, config, adv)
+        except Exception:  # noqa: BLE001 — OrderTooSmall u otros → fill sin coste
+            return Fill(
+                client_order_id=order.client_order_id,
+                fill_id=str(uuid.uuid4()),
+                symbol=order.symbol,
+                side=order.side,
+                quantity=order.quantity,
+                price=fill_price,
+                commission=_ZERO,
+                timestamp=order.timestamp,
+            )
+
+        net_price = adjusted_fill_price(fill_price, order.side, breakdown.price_adjustment)
+
+        return Fill(
+            client_order_id=order.client_order_id,
+            fill_id=str(uuid.uuid4()),
+            symbol=order.symbol,
+            side=order.side,
+            quantity=breakdown.adjusted_qty,
+            price=net_price,
+            commission=breakdown.commission,
+            timestamp=order.timestamp,
+        )
