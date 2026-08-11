@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from contextlib import closing
@@ -7,6 +8,8 @@ from decimal import Decimal
 from pathlib import Path
 
 from qtrader.core.types import AuditRecord, Fill, Side
+
+_NULL_HASH = "0" * 64
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS fills (
@@ -31,14 +34,12 @@ CREATE TABLE IF NOT EXISTS positions (
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (
-    record_id       TEXT PRIMARY KEY,
-    timestamp       TEXT NOT NULL,
-    event_type      TEXT NOT NULL,
-    data_hash       TEXT NOT NULL,
-    previous_hash   TEXT NOT NULL,
-    strategy_id     TEXT,
-    payload         TEXT NOT NULL,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    record_id   TEXT NOT NULL UNIQUE,
+    timestamp   TEXT NOT NULL,
+    event_type  TEXT NOT NULL,
+    data        TEXT NOT NULL,
+    record_hash TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
 
@@ -55,6 +56,7 @@ class SQLiteLedger:
     """Ledger persistente en SQLite.
 
     El broker es la fuente de verdad; este ledger es una caché local (invariante §2.5).
+    audit_log usa record_hash = SHA-256(data_json) para integridad verificable (ADR-003).
     """
 
     def __init__(self, db_path: str) -> None:
@@ -99,22 +101,22 @@ class SQLiteLedger:
             conn.commit()
 
     def record_audit(self, record: AuditRecord) -> None:
+        """Serializa el registro como JSON, computa SHA-256 y persiste en audit_log."""
+        data_json = json.dumps(record.model_dump(mode="json"), sort_keys=True)
+        record_hash = hashlib.sha256(data_json.encode()).hexdigest()
         with closing(sqlite3.connect(self._db_path)) as conn:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO audit_log
-                    (record_id, timestamp, event_type, data_hash,
-                     previous_hash, strategy_id, payload)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (record_id, timestamp, event_type, data, record_hash)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     record.record_id,
                     record.timestamp.isoformat(),
                     record.event_type,
-                    record.data_hash,
-                    record.previous_hash,
-                    record.strategy_id,
-                    json.dumps(record.payload),
+                    data_json,
+                    record_hash,
                 ),
             )
             conn.commit()
@@ -128,6 +130,54 @@ class SQLiteLedger:
             cursor = conn.execute("SELECT count(*) FROM fills")
             row = cursor.fetchone()
             return int(row[0])
+
+    def get_last_record_hash(self) -> str:
+        """Devuelve el record_hash del último registro en audit_log, o NULL_HASH si vacío."""
+        with closing(sqlite3.connect(self._db_path)) as conn:
+            cursor = conn.execute(
+                "SELECT record_hash FROM audit_log ORDER BY rowid DESC LIMIT 1"
+            )
+            row = cursor.fetchone()
+            return str(row[0]) if row else _NULL_HASH
+
+    def verify_chain(self) -> list[int]:
+        """Verifica integridad de la cadena de hashes.
+
+        Devuelve lista de rowids con registros inválidos (vacía = OK).
+        Un registro es inválido si:
+          1. SHA-256(data) != record_hash almacenado, o
+          2. previous_hash embebido en data != record_hash del registro anterior.
+        """
+        with closing(sqlite3.connect(self._db_path)) as conn:
+            rows = conn.execute(
+                "SELECT rowid, data, record_hash FROM audit_log ORDER BY rowid"
+            ).fetchall()
+
+        corrupt: list[int] = []
+        expected_prev_hash = _NULL_HASH
+
+        for row in rows:
+            rowid = int(row[0])
+            data_str = str(row[1])
+            stored_hash = str(row[2])
+
+            # Check 1: integridad del registro
+            computed = hashlib.sha256(data_str.encode()).hexdigest()
+            if computed != stored_hash:
+                corrupt.append(rowid)
+                expected_prev_hash = stored_hash  # avanza con el hash original
+                continue
+
+            # Check 2: enlace de la cadena
+            raw = json.loads(data_str)
+            rec_prev = str(raw.get("previous_hash", "")) if isinstance(raw, dict) else ""
+
+            if rec_prev != expected_prev_hash:
+                corrupt.append(rowid)
+
+            expected_prev_hash = stored_hash
+
+        return corrupt
 
     # ------------------------------------------------------------------
     # Interno

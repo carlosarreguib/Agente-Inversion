@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 from typing import TYPE_CHECKING
@@ -16,6 +17,7 @@ from qtrader.core.types import (
     Fill,
     Order,
     OrderType,
+    RiskDecision,
     RiskLevel,
     Side,
 )
@@ -27,6 +29,40 @@ from qtrader.strategies.sma import generate_signal
 _ZERO = Decimal("0")
 _LARGE_QTY = Decimal("9999")  # propuesta inicial; el Risk Engine la limita
 _NULL_HASH = "0" * 64
+
+# Parámetros del stub de config — en fases posteriores vendrán de un fichero YAML
+_CONFIG_STUB: dict[str, str] = {
+    "strategy": "sma20",
+    "sma_period": "20",
+    "risk_max_weight": "0.20",
+    "demo_equity": "1000",
+}
+_CONFIG_HASH: str = hashlib.sha256(
+    json.dumps(_CONFIG_STUB, sort_keys=True).encode()
+).hexdigest()
+
+_SMA_PARAMS: dict[str, str] = {"sma_period": "20"}
+
+
+def _get_git_sha() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode == 0:
+            sha = result.stdout.strip()
+            if sha:
+                return sha
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    return "unknown"
+
+
+_GIT_SHA: str = _get_git_sha()
 
 
 @dataclass(frozen=True)
@@ -82,7 +118,7 @@ def run_demo(
             )
 
             if risk.decision == RiskLevel.REJECT or risk.adjusted_quantity is None:
-                _record_audit(ledger, "RISK_REJECT", order_id, order_ts, {})
+                _record_audit(ledger, "RISK_REJECT", order_id, order_ts, {}, risk)
                 continue
 
             qty = risk.adjusted_quantity
@@ -99,7 +135,7 @@ def run_demo(
             cash -= fill.quantity * fill.price + fill.commission
             position_qty = fill.quantity
             ledger.record_fill(fill)
-            _record_audit_fill(ledger, fill)
+            _record_audit_fill(ledger, fill, risk)
             trades += 1
 
         elif signal.direction != Direction.LONG and position_qty > _ZERO:
@@ -137,7 +173,7 @@ def run_demo(
 
 
 # ---------------------------------------------------------------------------
-# Helpers de auditoría — stub T0.2 (previous_hash fijo; T0.3 encadena hashes)
+# Helpers de auditoría — T0.3: previous_hash encadenado, hash real
 # ---------------------------------------------------------------------------
 
 
@@ -145,7 +181,21 @@ def _hash_payload(payload: dict[str, str]) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
-def _record_audit_fill(ledger: SQLiteLedger, fill: Fill) -> None:
+def _risk_to_dict(risk: RiskDecision) -> dict[str, str]:
+    out: dict[str, str] = {"decision": risk.decision.value}
+    if risk.adjusted_quantity is not None:
+        out["adjusted_quantity"] = str(risk.adjusted_quantity)
+    if risk.reason is not None:
+        out["reason"] = risk.reason
+    return out
+
+
+def _record_audit_fill(
+    ledger: SQLiteLedger,
+    fill: Fill,
+    risk: RiskDecision | None = None,
+) -> None:
+    previous_hash = ledger.get_last_record_hash()
     payload: dict[str, str] = {
         "fill_id": fill.fill_id,
         "symbol": fill.symbol,
@@ -154,14 +204,21 @@ def _record_audit_fill(ledger: SQLiteLedger, fill: Fill) -> None:
         "price": str(fill.price),
         "commission": str(fill.commission),
     }
+    risk_output = _risk_to_dict(risk) if risk is not None else {}
     rec = AuditRecord(
         record_id=f"audit-{fill.fill_id}",
         timestamp=fill.timestamp,
         event_type="FILL",
         data_hash=_hash_payload(payload),
-        previous_hash=_NULL_HASH,
+        previous_hash=previous_hash,
         strategy_id="sma20",
         payload=payload,
+        git_sha=_GIT_SHA,
+        config_hash=_CONFIG_HASH,
+        parameters=_SMA_PARAMS,
+        risk_output=risk_output,
+        decision="FILL",
+        reason="",
     )
     ledger.record_audit(rec)
 
@@ -172,15 +229,24 @@ def _record_audit(
     order_id: str,
     ts: datetime,
     extra: dict[str, str],
+    risk: RiskDecision | None = None,
 ) -> None:
+    previous_hash = ledger.get_last_record_hash()
     payload: dict[str, str] = {"order_id": order_id, **extra}
+    risk_output = _risk_to_dict(risk) if risk is not None else {}
     rec = AuditRecord(
         record_id=f"audit-{event_type}-{order_id}",
         timestamp=ts,
         event_type=event_type,
         data_hash=_hash_payload(payload),
-        previous_hash=_NULL_HASH,
+        previous_hash=previous_hash,
         strategy_id="sma20",
         payload=payload,
+        git_sha=_GIT_SHA,
+        config_hash=_CONFIG_HASH,
+        parameters=_SMA_PARAMS,
+        risk_output=risk_output,
+        decision=event_type,
+        reason=risk.reason if risk is not None and risk.reason is not None else "",
     )
     ledger.record_audit(rec)

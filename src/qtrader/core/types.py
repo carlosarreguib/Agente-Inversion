@@ -205,8 +205,9 @@ class RiskDecision(BaseModel):
 class AuditRecord(BaseModel):
     """Registro de auditoría inmutable con hash encadenado.
 
-    payload usa dict[str, str] (no Any) para cumplir mypy strict.
-    Ver docs/DECISIONS.md ADR-001.
+    payload usa dict[str, str] (no Any) para cumplir mypy strict (ADR-001).
+    data_hash: hash del snapshot de datos usado para generar la señal.
+    previous_hash: record_hash del registro anterior en la cadena (ADR-003).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -218,3 +219,11 @@ class AuditRecord(BaseModel):
     previous_hash: str
     strategy_id: str | None = None
     payload: dict[str, str] = Field(default_factory=dict)
+
+    # Campos añadidos en T0.3 — con defaults para no romper tests existentes
+    git_sha: str = "unknown"
+    config_hash: str = "0" * 64
+    parameters: dict[str, str] = Field(default_factory=dict)
+    risk_output: dict[str, str] = Field(default_factory=dict)
+    decision: str = ""
+    reason: str = ""

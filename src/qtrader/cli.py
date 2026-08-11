@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 from decimal import Decimal
+from pathlib import Path
 
 
 def _fmt(amount: Decimal) -> str:
@@ -28,6 +29,25 @@ def _cmd_demo(args: argparse.Namespace) -> None:
     print(f"P&L:             {sign}{_fmt(result.pnl)}")
 
 
+def _cmd_audit_verify(args: argparse.Namespace) -> None:
+    db_path = str(args.db)
+    if not Path(db_path).exists():
+        print(f"ERROR: base de datos no encontrada: {db_path}", file=sys.stderr)
+        sys.exit(1)
+
+    from qtrader.ledger.sqlite import SQLiteLedger
+
+    ledger = SQLiteLedger(db_path)
+    corrupt = ledger.verify_chain()
+
+    if not corrupt:
+        print("OK")
+    else:
+        first = corrupt[0]
+        print(f"CORRUPCION detectada: rowid={first}")
+        sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="qtrader",
@@ -35,6 +55,9 @@ def main() -> None:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # ------------------------------------------------------------------
+    # demo
+    # ------------------------------------------------------------------
     demo_parser = subparsers.add_parser(
         "demo",
         help="Ejecuta un camino end-to-end con datos sintéticos",
@@ -57,10 +80,35 @@ def main() -> None:
         help="Ruta a la base de datos SQLite (default: data/state.db)",
     )
 
+    # ------------------------------------------------------------------
+    # audit
+    # ------------------------------------------------------------------
+    audit_parser = subparsers.add_parser(
+        "audit",
+        help="Comandos de auditoría",
+    )
+    audit_subs = audit_parser.add_subparsers(dest="audit_command", required=True)
+
+    verify_parser = audit_subs.add_parser(
+        "verify",
+        help="Verifica la integridad de la cadena de hashes en audit_log",
+    )
+    verify_parser.add_argument(
+        "--db",
+        default="data/state.db",
+        help="Ruta a la base de datos SQLite (default: data/state.db)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "demo":
         _cmd_demo(args)
+    elif args.command == "audit":
+        if args.audit_command == "verify":
+            _cmd_audit_verify(args)
+        else:
+            audit_parser.print_help()
+            sys.exit(1)
     else:
         parser.print_help()
         sys.exit(1)
