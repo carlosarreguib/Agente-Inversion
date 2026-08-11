@@ -195,6 +195,102 @@ def _cmd_golden_update(args: argparse.Namespace) -> None:  # noqa: ARG001
     print(f"Actualizado: {golden_json}")
 
 
+def _cmd_research_trials_count(args: argparse.Namespace) -> None:
+    from qtrader.research.trials_db import TrialsDB
+
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(f"ERROR: trials.db no encontrada: {db_path}", file=sys.stderr)
+        sys.exit(1)
+
+    db = TrialsDB(db_path)
+    strategy = args.strategy if args.strategy else None
+    n = db.count(strategy)
+    if strategy:
+        print(f"{n}  (estrategia={strategy})")
+    else:
+        print(n)
+
+
+def _cmd_research_report(args: argparse.Namespace) -> None:
+    from decimal import Decimal
+
+    from qtrader.research.dsr import compute_dsr
+    from qtrader.research.trials_db import TrialsDB
+
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(f"ERROR: trials.db no encontrada: {db_path}", file=sys.stderr)
+        sys.exit(1)
+
+    db = TrialsDB(db_path)
+    strategy_id = args.strategy
+    records = db.fetch_completed(strategy_id)
+
+    if not records:
+        print(f"Sin trials COMPLETED para estrategia '{strategy_id}'.")
+        return
+
+    n_total = db.count(strategy_id)
+    sharpes_oos = [r.sharpe_oos for r in records if r.sharpe_oos is not None]
+    # T_obs: inferir del primer registro (test_end - test_start en dias habiles)
+    first = records[0]
+    days_range = (first.test_end - first.test_start).days
+    t_obs = max(1, int(days_range * 5 / 7))  # aprox. dias habiles
+
+    dsr = compute_dsr(sharpes_oos, t_obs)
+
+    print(f"\n=== Informe walk-forward: {strategy_id} ===")
+    print(f"N trials totales (DB):  {n_total}")
+    print(f"N folds COMPLETED:      {len(records)}")
+    print(f"T observaciones (OOS):  {t_obs}")
+    print()
+    print(f"DSR (Deflated Sharpe):  {dsr.dsr}")
+    print(f"  SR* (esperado H0):    {dsr.sr_star}")
+    print(f"  SR obs (mejor OOS):   {dsr.sr_obs}")
+    print(f"  sigma_SR:             {dsr.sigma_sr}")
+    if dsr.note:
+        print(f"  Nota: {dsr.note}")
+    print()
+
+    # Tabla por fold
+    print(f"{'Fold':>4}  {'Train':>22}  {'Test':>22}  {'SR_IS':>7}  {'SR_OOS':>7}"
+          f"  {'MaxDD_OOS':>10}  {'Trades':>6}")
+    print("-" * 90)
+
+    best_oos = max((r.sharpe_oos or Decimal("-99") for r in records), default=None)
+    worst_oos = min((r.sharpe_oos or Decimal("99") for r in records), default=None)
+
+    for r in records:
+        marker = ""
+        if r.sharpe_oos == best_oos:
+            marker = " <-- mejor"
+        elif r.sharpe_oos == worst_oos:
+            marker = " <-- peor"
+        sr_is_str = f"{r.sharpe_is:.4f}" if r.sharpe_is is not None else "N/A"
+        sr_oos_str = f"{r.sharpe_oos:.4f}" if r.sharpe_oos is not None else "N/A"
+        mdd_str = f"{r.max_drawdown_oos:.4f}" if r.max_drawdown_oos is not None else "N/A"
+        trades_str = str(r.num_trades_oos) if r.num_trades_oos is not None else "N/A"
+        print(
+            f"{r.fold_id:>4}  "
+            f"{r.train_start} -> {r.train_end}  "
+            f"{r.test_start} -> {r.test_end}  "
+            f"{sr_is_str:>7}  {sr_oos_str:>7}  {mdd_str:>10}  {trades_str:>6}"
+            f"{marker}"
+        )
+
+    if len(sharpes_oos) >= 2:
+        import math
+        n = len(sharpes_oos)
+        mean = sum(float(s) for s in sharpes_oos) / n
+        std = math.sqrt(
+            sum((float(s) - mean) ** 2 for s in sharpes_oos) / (n - 1)
+        )
+        print()
+        print(f"Estabilidad (std SR OOS entre folds): {std:.4f}")
+        print(f"Media SR OOS:                         {mean:.4f}")
+
+
 def _cmd_audit_verify(args: argparse.Namespace) -> None:
     db_path = str(args.db)
     if not Path(db_path).exists():
@@ -304,6 +400,54 @@ def main() -> None:
         help="Regenera golden_reference.json (muestra diff y pide confirmacion)",
     )
 
+    # ------------------------------------------------------------------
+    # research
+    # ------------------------------------------------------------------
+    research_parser = subparsers.add_parser(
+        "research",
+        help="Walk-forward validation y registro de trials",
+    )
+    research_subs = research_parser.add_subparsers(dest="research_command", required=True)
+
+    # research trials count
+    trials_parser = research_subs.add_parser(
+        "trials",
+        help="Comandos sobre el registro de trials",
+    )
+    trials_subs = trials_parser.add_subparsers(dest="trials_command", required=True)
+    trials_count_parser = trials_subs.add_parser(
+        "count",
+        help="Numero acumulado de trials registrados",
+    )
+    trials_count_parser.add_argument(
+        "--db",
+        default="data/trials.db",
+        help="Ruta a trials.db (default: data/trials.db)",
+    )
+    trials_count_parser.add_argument(
+        "--strategy",
+        default=None,
+        metavar="STRATEGY_ID",
+        help="Filtrar por estrategia (default: todas)",
+    )
+
+    # research report
+    report_parser = research_subs.add_parser(
+        "report",
+        help="Informe de walk-forward para una estrategia",
+    )
+    report_parser.add_argument(
+        "--strategy",
+        required=True,
+        metavar="STRATEGY_ID",
+        help="ID de la estrategia",
+    )
+    report_parser.add_argument(
+        "--db",
+        default="data/trials.db",
+        help="Ruta a trials.db (default: data/trials.db)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "demo":
@@ -325,6 +469,18 @@ def main() -> None:
             _cmd_golden_update(args)
         else:
             golden_parser.print_help()
+            sys.exit(1)
+    elif args.command == "research":
+        if args.research_command == "trials":
+            if args.trials_command == "count":
+                _cmd_research_trials_count(args)
+            else:
+                trials_parser.print_help()
+                sys.exit(1)
+        elif args.research_command == "report":
+            _cmd_research_report(args)
+        else:
+            research_parser.print_help()
             sys.exit(1)
     else:
         parser.print_help()

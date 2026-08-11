@@ -1,0 +1,14 @@
+# Parametros del walk-forward y registro de trials (T2.4).
+# Todos los valores son configurables; los defaults siguen las reglas de CLAUDE.md.
+
+walk_forward:
+  train_days: 756       # dias habiles de entrenamiento (3 años aprox.)
+  test_days: 252        # dias habiles de test out-of-sample (1 año aprox.)
+  step_days: 63         # avance entre folds (1 trimestre aprox.)
+  embargo_days: 5       # dias habiles eliminados al final del train (purga)
+
+trials:
+  db_path: "data/trials.db"   # separado de state.db (invariante T2.4)
+
+report:
+  min_folds_for_dsr: 2        # minimo de folds para calcular DSR con sentido
