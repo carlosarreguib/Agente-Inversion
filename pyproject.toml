@@ -78,3 +78,9 @@ name = "strategies does not import execution"
 type = "forbidden"
 source_modules = ["qtrader.strategies"]
 forbidden_modules = ["qtrader.execution", "qtrader.agents"]
+
+[[tool.importlinter.contracts]]
+name = "validation does not import ledger or execution"
+type = "forbidden"
+source_modules = ["qtrader.data.validation"]
+forbidden_modules = ["qtrader.ledger", "qtrader.execution", "qtrader.agents"]

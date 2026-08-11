@@ -253,6 +253,29 @@ class ValidatedBar(BaseModel):
     quality_reason: str = ""
 
 
+class Severity(StrEnum):
+    WARN = "WARN"        # anómalo pero se puede operar; se registra
+    EXCLUDE = "EXCLUDE"  # bar excluido del universo ese día
+    HALT = "HALT"        # corrupción sistémica; el agente debe detenerse
+
+
+class ValidationResult(BaseModel):
+    """Resultado de una regla de validación sobre un bar o serie de bars.
+
+    El validador es puro: devuelve estos objetos; el llamador decide qué hacer.
+    Pydantic frozen=True para que no mute tras creación.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    date: AwareDatetime
+    rule_violated: str  # slug: gap, duplicate, ohlc, negative_price, zero_volume,
+    #                      price_spike, frozen_series, cross_validation
+    severity: Severity
+    details: str
+
+
 class AuditRecord(BaseModel):
     """Registro de auditoría inmutable con hash encadenado.
 
