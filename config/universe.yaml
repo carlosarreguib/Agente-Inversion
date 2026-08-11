@@ -1,0 +1,439 @@
+# Universo de ETFs del proyecto qtrader
+# declared_on: fecha de la última modificación de este fichero.
+# Cada instrumento lleva su propio declared_on.
+# get_universe(as_of) devuelve solo los instrumentos con declared_on <= as_of.
+# Añadir un instrumento requiere actualizar declared_on del instrumento.
+# Cambiar declared_on del fichero sin añadir instrumentos está prohibido.
+
+version: "1.0"
+declared_on: "2022-01-01"
+
+instruments:
+  # -----------------------------------------------------------------------
+  # REGIONES — renta variable global
+  # -----------------------------------------------------------------------
+  - symbol: SPY
+    ticker_proxy: SPY
+    ticker_ucits: CSPX
+    exchange: XNYS
+    currency: USD
+    category: region
+    name: "US Large Cap (S&P 500)"
+    declared_on: "2022-01-01"
+
+  - symbol: QQQ
+    ticker_proxy: QQQ
+    ticker_ucits: EQQQ
+    exchange: XNAS
+    currency: USD
+    category: region
+    name: "US Tech / Nasdaq-100"
+    declared_on: "2022-01-01"
+
+  - symbol: IWM
+    ticker_proxy: IWM
+    ticker_ucits: IUSZ
+    exchange: XNYS
+    currency: USD
+    category: region
+    name: "US Small Cap (Russell 2000)"
+    declared_on: "2022-01-01"
+
+  - symbol: EFA
+    ticker_proxy: EFA
+    ticker_ucits: IWRD
+    exchange: XNYS
+    currency: USD
+    category: region
+    name: "Developed Markets ex-US"
+    declared_on: "2022-01-01"
+
+  - symbol: EWJ
+    ticker_proxy: EWJ
+    ticker_ucits: IJPN
+    exchange: XNYS
+    currency: USD
+    category: region
+    name: "Japan Equities"
+    declared_on: "2022-01-01"
+
+  - symbol: EEM
+    ticker_proxy: EEM
+    ticker_ucits: IEEM
+    exchange: XNYS
+    currency: USD
+    category: region
+    name: "Emerging Markets"
+    declared_on: "2022-01-01"
+
+  - symbol: VGK
+    ticker_proxy: VGK
+    ticker_ucits: IMEU
+    exchange: XNYS
+    currency: USD
+    category: region
+    name: "Europe Equities"
+    declared_on: "2022-01-01"
+
+  - symbol: EWZ
+    ticker_proxy: EWZ
+    ticker_ucits: IBZL
+    exchange: XNYS
+    currency: USD
+    category: region
+    name: "Brazil Equities"
+    declared_on: "2022-01-01"
+
+  - symbol: FXI
+    ticker_proxy: FXI
+    ticker_ucits: IDFX
+    exchange: XNYS
+    currency: USD
+    category: region
+    name: "China Large Cap"
+    declared_on: "2022-01-01"
+
+  # -----------------------------------------------------------------------
+  # SECTORES — 11 GICS
+  # -----------------------------------------------------------------------
+  - symbol: XLK
+    ticker_proxy: XLK
+    ticker_ucits: IUIT
+    exchange: XNYS
+    currency: USD
+    category: sector
+    name: "Information Technology"
+    declared_on: "2022-01-01"
+
+  - symbol: XLF
+    ticker_proxy: XLF
+    ticker_ucits: IFNL
+    exchange: XNYS
+    currency: USD
+    category: sector
+    name: "Financials"
+    declared_on: "2022-01-01"
+
+  - symbol: XLV
+    ticker_proxy: XLV
+    ticker_ucits: IHCU
+    exchange: XNYS
+    currency: USD
+    category: sector
+    name: "Health Care"
+    declared_on: "2022-01-01"
+
+  - symbol: XLE
+    ticker_proxy: XLE
+    ticker_ucits: IOGP
+    exchange: XNYS
+    currency: USD
+    category: sector
+    name: "Energy"
+    declared_on: "2022-01-01"
+
+  - symbol: XLI
+    ticker_proxy: XLI
+    ticker_ucits: IIND
+    exchange: XNYS
+    currency: USD
+    category: sector
+    name: "Industrials"
+    declared_on: "2022-01-01"
+
+  - symbol: XLY
+    ticker_proxy: XLY
+    ticker_ucits: IUCD
+    exchange: XNYS
+    currency: USD
+    category: sector
+    name: "Consumer Discretionary"
+    declared_on: "2022-01-01"
+
+  - symbol: XLP
+    ticker_proxy: XLP
+    ticker_ucits: IUCS
+    exchange: XNYS
+    currency: USD
+    category: sector
+    name: "Consumer Staples"
+    declared_on: "2022-01-01"
+
+  - symbol: XLU
+    ticker_proxy: XLU
+    ticker_ucits: IUTU
+    exchange: XNYS
+    currency: USD
+    category: sector
+    name: "Utilities"
+    declared_on: "2022-01-01"
+
+  - symbol: XLB
+    ticker_proxy: XLB
+    ticker_ucits: IUMS
+    exchange: XNYS
+    currency: USD
+    category: sector
+    name: "Materials"
+    declared_on: "2022-01-01"
+
+  - symbol: XLRE
+    ticker_proxy: XLRE
+    ticker_ucits: IUSR
+    exchange: XNYS
+    currency: USD
+    category: sector
+    name: "Real Estate"
+    declared_on: "2022-01-01"
+
+  - symbol: XLC
+    ticker_proxy: XLC
+    ticker_ucits: IUCM
+    exchange: XNYS
+    currency: USD
+    category: sector
+    name: "Communication Services"
+    declared_on: "2022-01-01"
+
+  # -----------------------------------------------------------------------
+  # FACTORES
+  # -----------------------------------------------------------------------
+  - symbol: MTUM
+    ticker_proxy: MTUM
+    ticker_ucits: IMTM
+    exchange: XNYS
+    currency: USD
+    category: factor
+    name: "US Momentum Factor"
+    declared_on: "2022-01-01"
+
+  - symbol: VLUE
+    ticker_proxy: VLUE
+    ticker_ucits: IVAL
+    exchange: XNYS
+    currency: USD
+    category: factor
+    name: "US Value Factor"
+    declared_on: "2022-01-01"
+
+  - symbol: QUAL
+    ticker_proxy: QUAL
+    ticker_ucits: IQLT
+    exchange: XNYS
+    currency: USD
+    category: factor
+    name: "US Quality Factor"
+    declared_on: "2022-01-01"
+
+  - symbol: USMV
+    ticker_proxy: USMV
+    ticker_ucits: MVOL
+    exchange: XNYS
+    currency: USD
+    category: factor
+    name: "US Minimum Volatility"
+    declared_on: "2022-01-01"
+
+  - symbol: SIZE
+    ticker_proxy: SIZE
+    ticker_ucits: ISZE
+    exchange: XNYS
+    currency: USD
+    category: factor
+    name: "US Size Factor (Small Cap)"
+    declared_on: "2022-01-01"
+
+  - symbol: MOAT
+    ticker_proxy: MOAT
+    ticker_ucits: GOAT
+    exchange: XNYS
+    currency: USD
+    category: factor
+    name: "Wide Moat (Durable Quality)"
+    declared_on: "2022-01-01"
+
+  # -----------------------------------------------------------------------
+  # RENTA FIJA — US Treasuries y crédito
+  # -----------------------------------------------------------------------
+  - symbol: SHY
+    ticker_proxy: SHY
+    ticker_ucits: IBTS
+    exchange: XNAS
+    currency: USD
+    category: fixed_income
+    name: "US Treasuries 1-3yr"
+    declared_on: "2022-01-01"
+
+  - symbol: IEF
+    ticker_proxy: IEF
+    ticker_ucits: IDTM
+    exchange: XNAS
+    currency: USD
+    category: fixed_income
+    name: "US Treasuries 7-10yr"
+    declared_on: "2022-01-01"
+
+  - symbol: TLT
+    ticker_proxy: TLT
+    ticker_ucits: IDTL
+    exchange: XNAS
+    currency: USD
+    category: fixed_income
+    name: "US Treasuries 20+yr"
+    declared_on: "2022-01-01"
+
+  - symbol: LQD
+    ticker_proxy: LQD
+    ticker_ucits: SLQD
+    exchange: XNYS
+    currency: USD
+    category: fixed_income
+    name: "US Investment Grade Corporate"
+    declared_on: "2022-01-01"
+
+  - symbol: HYG
+    ticker_proxy: HYG
+    ticker_ucits: IHYG
+    exchange: XNYS
+    currency: USD
+    category: fixed_income
+    name: "US High Yield Corporate"
+    declared_on: "2022-01-01"
+
+  - symbol: TIP
+    ticker_proxy: TIP
+    ticker_ucits: ITPS
+    exchange: XNYS
+    currency: USD
+    category: fixed_income
+    name: "US TIPS (Inflation Protected)"
+    declared_on: "2022-01-01"
+
+  - symbol: EMB
+    ticker_proxy: EMB
+    ticker_ucits: IEMB
+    exchange: XNAS
+    currency: USD
+    category: fixed_income
+    name: "Emerging Markets Bonds USD"
+    declared_on: "2022-01-01"
+
+  # -----------------------------------------------------------------------
+  # RENTA FIJA — Europa
+  # -----------------------------------------------------------------------
+  - symbol: IBGL
+    ticker_proxy: IEF
+    ticker_ucits: IBGL
+    exchange: XLON
+    currency: GBP
+    category: fixed_income
+    name: "Euro Govt Bonds 7-10yr (proxy: IEF)"
+    declared_on: "2022-01-01"
+
+  # -----------------------------------------------------------------------
+  # ALTERNATIVOS
+  # -----------------------------------------------------------------------
+  - symbol: GLD
+    ticker_proxy: GLD
+    ticker_ucits: SGLN
+    exchange: XNYS
+    currency: USD
+    category: alternative
+    name: "Gold"
+    declared_on: "2022-01-01"
+
+  - symbol: SLV
+    ticker_proxy: SLV
+    ticker_ucits: SSLN
+    exchange: XNYS
+    currency: USD
+    category: alternative
+    name: "Silver"
+    declared_on: "2022-01-01"
+
+  - symbol: DBC
+    ticker_proxy: DBC
+    ticker_ucits: CMOD
+    exchange: XNYS
+    currency: USD
+    category: alternative
+    name: "Broad Commodities"
+    declared_on: "2022-01-01"
+
+  - symbol: VNQ
+    ticker_proxy: VNQ
+    ticker_ucits: IWDP
+    exchange: XNYS
+    currency: USD
+    category: alternative
+    name: "US REITs"
+    declared_on: "2022-01-01"
+
+  - symbol: VNQI
+    ticker_proxy: VNQI
+    ticker_ucits: IWDP
+    exchange: XNAS
+    currency: USD
+    category: alternative
+    name: "International REITs"
+    declared_on: "2022-01-01"
+
+  - symbol: USO
+    ticker_proxy: USO
+    ticker_ucits: OILB
+    exchange: XNYS
+    currency: USD
+    category: alternative
+    name: "Crude Oil"
+    declared_on: "2022-01-01"
+
+  - symbol: UNG
+    ticker_proxy: UNG
+    ticker_ucits: SGAS
+    exchange: XNYS
+    currency: USD
+    category: alternative
+    name: "Natural Gas"
+    declared_on: "2022-01-01"
+
+  # -----------------------------------------------------------------------
+  # VOLATILIDAD / COBERTURA
+  # -----------------------------------------------------------------------
+  - symbol: BNDX
+    ticker_proxy: BNDX
+    ticker_ucits: AGGH
+    exchange: XNAS
+    currency: USD
+    category: fixed_income
+    name: "International Bonds Hedged USD"
+    declared_on: "2022-01-01"
+
+  - symbol: BND
+    ticker_proxy: BND
+    ticker_ucits: AGGG
+    exchange: XNAS
+    currency: USD
+    category: fixed_income
+    name: "US Total Bond Market"
+    declared_on: "2022-01-01"
+
+  # -----------------------------------------------------------------------
+  # Instrumentos añadidos en versión posterior — para test point-in-time
+  # -----------------------------------------------------------------------
+  - symbol: CNDX
+    ticker_proxy: QQQ
+    ticker_ucits: CNDX
+    exchange: XLON
+    currency: GBP
+    category: region
+    name: "Nasdaq-100 UCITS (LSE) — added 2024"
+    declared_on: "2024-01-01"
+
+  - symbol: WSML
+    ticker_proxy: IWM
+    ticker_ucits: WSML
+    exchange: XLON
+    currency: GBP
+    category: region
+    name: "World Small Cap UCITS — added 2024"
+    declared_on: "2024-01-01"

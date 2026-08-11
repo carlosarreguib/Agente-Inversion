@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date  # noqa: TCH003 — needed at runtime by Pydantic for field validation
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any
@@ -84,8 +85,23 @@ class Bar(BaseModel):
         return self
 
 
+class InstrumentCategory(StrEnum):
+    REGION = "region"
+    SECTOR = "sector"
+    FACTOR = "factor"
+    FIXED_INCOME = "fixed_income"
+    ALTERNATIVE = "alternative"
+
+
 class Instrument(BaseModel):
-    """Instrumento negociable. El universo se declara en config/universe.yaml."""
+    """Instrumento negociable. El universo se declara en config/universe.yaml.
+
+    ticker_proxy:  ticker US para backtest (datos más largos y líquidos).
+    ticker_ucits:  ticker UCITS equivalente para operativa real.
+    declared_on:   fecha desde la que este instrumento pertenece al universo.
+                   Permite selección point-in-time (invariante §3.3).
+    instrument_type: legado; usar category para clasificaciones nuevas.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -93,7 +109,11 @@ class Instrument(BaseModel):
     name: str
     exchange: str
     currency: str
-    instrument_type: InstrumentType
+    category: InstrumentCategory
+    ticker_proxy: str
+    ticker_ucits: str
+    declared_on: date
+    instrument_type: InstrumentType = InstrumentType.ETF
 
 
 class Signal(BaseModel):

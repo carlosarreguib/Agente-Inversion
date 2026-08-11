@@ -1,0 +1,59 @@
+# Mapeo proxy US → UCITS para cada instrumento del universo.
+# tracking_error_threshold: fracción máxima de tracking error diario
+# permitida antes de registrar una anomalía en el backtest.
+# Los pares se usan para calcular el haircut de tracking error en informes.
+
+tracking_error_threshold: 0.005   # 0.5 % diario (invariante §3.11)
+
+pairs:
+  # Regiones
+  SPY:  CSPX
+  QQQ:  EQQQ
+  IWM:  IUSZ
+  EFA:  IWRD
+  EWJ:  IJPN
+  EEM:  IEEM
+  VGK:  IMEU
+  EWZ:  IBZL
+  FXI:  IDFX
+  # Sectores GICS
+  XLK:  IUIT
+  XLF:  IFNL
+  XLV:  IHCU
+  XLE:  IOGP
+  XLI:  IIND
+  XLY:  IUCD
+  XLP:  IUCS
+  XLU:  IUTU
+  XLB:  IUMS
+  XLRE: IUSR
+  XLC:  IUCM
+  # Factores
+  MTUM: IMTM
+  VLUE: IVAL
+  QUAL: IQLT
+  USMV: MVOL
+  SIZE: ISZE
+  MOAT: GOAT
+  # Renta fija
+  SHY:  IBTS
+  IEF:  IDTM
+  TLT:  IDTL
+  LQD:  SLQD
+  HYG:  IHYG
+  TIP:  ITPS
+  EMB:  IEMB
+  IBGL: IBGL   # ya es UCITS; proxy = IEF
+  BNDX: AGGH
+  BND:  AGGG
+  # Alternativos
+  GLD:  SGLN
+  SLV:  SSLN
+  DBC:  CMOD
+  VNQ:  IWDP
+  VNQI: IWDP
+  USO:  OILB
+  UNG:  SGAS
+  # Añadidos 2024
+  CNDX: CNDX   # ya es UCITS
+  WSML: WSML   # ya es UCITS

@@ -314,12 +314,20 @@ def test_signal_rejects_float_strength() -> None:
 
 
 def test_instrument_roundtrip() -> None:
+    from datetime import date
+
+    from qtrader.core.types import InstrumentCategory
+
     inst = Instrument(
         symbol="CSPX",
         name="iShares Core S&P 500 UCITS ETF",
-        exchange="LSE",
+        exchange="XLON",
         currency="USD",
         instrument_type=InstrumentType.ETF,
+        category=InstrumentCategory.REGION,
+        ticker_proxy="SPY",
+        ticker_ucits="CSPX",
+        declared_on=date(2022, 1, 1),
     )
     assert inst.symbol == "CSPX"
 

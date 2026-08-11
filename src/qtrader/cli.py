@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -27,6 +28,26 @@ def _cmd_demo(args: argparse.Namespace) -> None:
     print(f"Nº de trades:    {result.trades}")
     sign = "+" if result.pnl >= Decimal("0") else ""
     print(f"P&L:             {sign}{_fmt(result.pnl)}")
+
+
+def _cmd_universe_show(args: argparse.Namespace) -> None:
+    from qtrader.data.universe import UniverseManager
+
+    config_dir = Path(args.config_dir) if args.config_dir else None
+    mgr = UniverseManager(config_dir=config_dir)
+    as_of = date.fromisoformat(args.date)
+    instruments = mgr.get_universe(as_of)
+
+    print(f"Universo point-in-time al {as_of}  ({len(instruments)} instrumentos)")
+    print(f"{'SYMBOL':<8}  {'CATEGORY':<14}  {'EXCHANGE':<6}  {'CCY':<4}  "
+          f"{'TICKER_PROXY':<14}  {'TICKER_UCITS':<14}  DECLARED_ON")
+    print("-" * 95)
+    for inst in instruments:
+        print(
+            f"{inst.symbol:<8}  {inst.category.value:<14}  {inst.exchange:<6}  "
+            f"{inst.currency:<4}  {inst.ticker_proxy:<14}  {inst.ticker_ucits:<14}  "
+            f"{inst.declared_on}"
+        )
 
 
 def _cmd_audit_verify(args: argparse.Namespace) -> None:
@@ -99,6 +120,32 @@ def main() -> None:
         help="Ruta a la base de datos SQLite (default: data/state.db)",
     )
 
+    # ------------------------------------------------------------------
+    # universe
+    # ------------------------------------------------------------------
+    universe_parser = subparsers.add_parser(
+        "universe",
+        help="Comandos del universo de instrumentos",
+    )
+    universe_subs = universe_parser.add_subparsers(dest="universe_command", required=True)
+
+    show_parser = universe_subs.add_parser(
+        "show",
+        help="Muestra el universo activo en una fecha dada",
+    )
+    show_parser.add_argument(
+        "--date",
+        required=True,
+        metavar="YYYY-MM-DD",
+        help="Fecha de referencia (point-in-time)",
+    )
+    show_parser.add_argument(
+        "--config-dir",
+        default=None,
+        metavar="PATH",
+        help="Directorio de configuración (default: config/ en raíz del proyecto)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "demo":
@@ -108,6 +155,12 @@ def main() -> None:
             _cmd_audit_verify(args)
         else:
             audit_parser.print_help()
+            sys.exit(1)
+    elif args.command == "universe":
+        if args.universe_command == "show":
+            _cmd_universe_show(args)
+        else:
+            universe_parser.print_help()
             sys.exit(1)
     else:
         parser.print_help()

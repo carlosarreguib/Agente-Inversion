@@ -1,0 +1,27 @@
+# Filtros de liquidez y calidad aplicados al universo antes de cada sesión.
+# Un instrumento que no supere estos filtros se excluye ese día (no se elimina
+# del universo permanente). Ver UniverseManager.apply_filters().
+
+# Volumen medio diario mínimo en EUR (30 días)
+min_adv_eur: 1_000_000
+
+# Precio mínimo por acción/participación en la moneda del instrumento
+min_price: 5.0
+
+# Spread bid-ask máximo en puntos básicos
+max_spread_bps: 50
+
+# Monedas admitidas en el universo
+allowed_currencies:
+  - USD
+  - EUR
+  - GBP
+
+# MICs (ISO 10383) de bolsas admitidas
+allowed_exchanges:
+  - XNYS   # NYSE
+  - XNAS   # NASDAQ
+  - XLON   # London Stock Exchange
+  - XETR   # Xetra (Frankfurt)
+  - XPAR   # Euronext Paris
+  - XAMS   # Euronext Amsterdam

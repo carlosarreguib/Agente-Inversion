@@ -4,9 +4,11 @@ version = "0.1.0"
 description = "Plataforma experimental de gestión cuantitativa de cartera (solo simulación)"
 requires-python = "==3.12.*"
 dependencies = [
+    "exchange-calendars>=4.13.2",
     "pandas>=3.0.5",
     "pyarrow>=25.0.1",
     "pydantic>=2.0,<3",
+    "pyyaml>=6.0.3",
 ]
 
 [project.scripts]
@@ -22,6 +24,7 @@ dev = [
     "import-linter>=2.13",
     "pandas-stubs>=3.0.5.260730",
     "pyarrow-stubs>=20.0.0.20260625",
+    "types-pyyaml>=6.0.12.20260724",
 ]
 
 [build-system]
