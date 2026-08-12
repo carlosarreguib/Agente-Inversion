@@ -481,3 +481,227 @@ corriente desde el punto de vista de la integridad de la BD.
   (11 contratos, 0 rotos).
 - En el broker IBKR real (fase 11), `reconcile()` deberá llamar a la API del broker
   para `get_order_status` — el mismo patrón, distinta implementación del paso de I/O.
+
+---
+
+## ADR-009 — El agente pide el HALT, no lo activa
+
+**Fecha**: 2026-08-12
+**Estado**: Aceptado
+
+### Contexto
+
+La especificación de T6 describe el estado `ERROR` como «loggear, activar kill
+switch, detenerse». Esto contradice dos invariantes ya establecidas:
+
+- CLAUDE.md §2.6: «El kill switch está fuera del proceso del agente. **El agente
+  lo lee; no puede escribirlo ni borrarlo.**»
+- El docstring de `KillSwitch.activate()` (`src/qtrader/safety/kill_switch.py:85-88`):
+  «Puede llamarse desde cualquier componente **excepto el agente**.»
+
+Además, en un despliegue real donde el fichero HALT tiene permisos de solo
+lectura para el usuario del agente, `activate()` fallaría con `PermissionError`:
+la ruta ni siquiera es ejecutable de forma fiable.
+
+Por CLAUDE.md §6, ante una contradicción entre una tarea y este fichero, gana el
+fichero, y hay que decirlo explícitamente en vez de resolverlo en silencio.
+
+### Opciones consideradas
+
+1. **Implementar el spec literalmente**: el agente llama a `activate()`. Viola
+   §2.6 y falla en producción con permisos correctos.
+2. **No activar nunca**: el agente solo deja de latir y el Watchdog activa el
+   HALT a los 180 s. Máxima pureza, pero deja una ventana de hasta 3 minutos sin
+   HALT tras un error fatal.
+3. **Halt requester inyectado** (elegida).
+
+### Decisión
+
+El agente recibe un `halt_requester: Callable[[str], None] | None` inyectado:
+
+- `--mode paper` / `development`: el CLI inyecta `kill_switch.activate`, útil en
+  un bucle local monousuario.
+- `--mode production`: `None`. El Watchdog, que vive fuera del proceso, activa el
+  HALT al no recibir heartbeat.
+
+El agente tipa el kill switch como `KillSwitchReader`, un `Protocol` con un solo
+método `is_active()`. `activate()` y `deactivate()` **no están en la superficie de
+tipos del agente**: la invariante queda garantizada por estructura, no por
+convención. Hay un test que lo comprueba
+(`test_agent_never_calls_activate_directly`).
+
+### Consecuencias
+
+- Se cumple la intención del spec (el sistema deja de operar tras un error fatal)
+  sin que el agente escriba el kill switch en producción.
+- El modo de producción depende del Watchdog para el HALT automático, con la
+  latencia de `max_silence_seconds`. Es el comportamiento correcto: el actor que
+  detiene el sistema está fuera del proceso que ha fallado.
+- Un `AgentHalted` lanzado dentro de un handler también pasa por `_to_error`:
+  persiste `ERROR` y pide el HALT. Sin eso, un `VALIDATION_HALT` se propagaría sin
+  dejar rastro en `agent_state`.
+
+---
+
+## ADR-010 — El agente posee su propia base de datos (`data/agent.db`)
+
+**Fecha**: 2026-08-12
+**Estado**: Aceptado
+
+### Contexto
+
+La especificación de T6 dice «Tabla `agent_state` en `state.db`». Pero
+`SQLiteLedger.initialize()` ejecuta `_DROP + _SCHEMA`
+(`src/qtrader/ledger/sqlite.py:82-86`), es decir, **borra todas las tablas**, y
+`qtrader demo` la invoca con el default `data/state.db`.
+
+Co-localizar `agent_state` con el ledger significaría que un `qtrader demo`
+accidental destruiría la cadena de auditoría dejando `agent_state` huérfano,
+apuntando a un `cycle_id` cuyos registros ya no existen.
+
+### Decisión
+
+El agente posee `data/agent.db` con DDL idempotente (`CREATE TABLE IF NOT EXISTS`)
+para `agent_state`, `agent_pending_orders` y `agent_nav_history`, y **nunca llama
+a `initialize()`**. Para el ledger usa `ensure_ledger_schema()`, que crea el
+esquema sin borrar nada.
+
+Sigue el patrón ya establecido en el repositorio: `PaperBroker`,
+`ExecutionRateLimiter` y `trials_db` tienen cada uno su propio fichero.
+
+### Consecuencias
+
+- Cuatro ficheros SQLite, cuatro dueños, sin interferencias destructivas.
+- Todas las rutas son configurables por CLI, lo que hace los tests triviales.
+- `agent_state` es append-only en vez de un UPDATE sobre una fila única: encaja
+  con la cultura de auditoría del proyecto y hace inspeccionables los tests de
+  crash. `load()` devuelve la última fila.
+- La clave de `agent_pending_orders` es `(trading_date, order_id)` y **no incluye
+  `cycle_id`**: las órdenes las aprueba el ciclo POST_CLOSE del día T y las envía
+  el ciclo PRE_OPEN del día siguiente, que es otro proceso con su propio
+  `cycle_id`. Incluirlo haría que PRE_OPEN nunca encontrase nada que enviar.
+
+---
+
+## ADR-011 — Tras un crash en `SUBMITTING_ORDERS` se reanuda en `RECONCILING`
+
+**Fecha**: 2026-08-12
+**Estado**: Aceptado
+
+### Contexto
+
+Si el proceso muere dentro de `SUBMITTING_ORDERS`, el conjunto de órdenes que
+llegó al broker es **desconocido para el agente**. `PaperBroker.submit_order`
+tiene tres pasos durables (`paper_broker.py:240-291`) y el crash puede caer entre
+cualquiera de ellos; además, el bucle puede morir entre la orden *k* y la *k+1*.
+
+El estado real es una partición del lote en {nunca enviada, enviada-desconocida,
+enviada-confirmada}. Como `agent_pending_orders.submitted_at` se escribe *después*
+de que retorne el `await`, una fila que parece no enviada puede haber llegado al
+broker.
+
+### Decisión
+
+`RESUME_MAP[SUBMITTING_ORDERS] = RECONCILING`. Nunca se reintentan los submits
+directamente. El conjunto a reintentar solo queda bien definido **después** de
+reconciliar:
+
+```
+retryable = filas con submitted_at IS NULL AND client_order_id IS NULL
+          ∪ filas con submitted_at IS NULL AND client_order_id IS NOT NULL
+            AND get_order_status(coid) == UNKNOWN
+```
+
+La segunda rama es el «consultar antes de reenviar» que exige CLAUDE.md §2.4.
+Para que el `client_order_id` sea reconstruible, `sequence_number` y
+`client_order_id` se escriben **commiteados antes** del `await submit_order`, en la
+misma transacción que `next_sequence()` — que deliberadamente no hace commit
+(`order_id.py:40-52`) precisamente para permitir esta composición.
+
+Por el mismo motivo, `GENERATING_SIGNALS` y `EVALUATING_RISK` reanudan en
+`LOADING_DATA` (dependen de datos en memoria que murieron con el proceso; la
+estrategia es *stateful* y reanudar ahí produciría cero señales en silencio), y
+`MONITORING` reanuda en `RECONCILING` (`advance_to()` muta cash y posiciones).
+
+### Consecuencias
+
+- Reintentar directamente duplicaría exactamente el subconjunto
+  «enviada-desconocida», violando §2.4 y §1 («un sistema que gana un 40 % con una
+  orden duplicada sin explicar es un fracaso»).
+- Un `ERROR` persistido **rechaza arrancar** (exit 2) y exige intervención humana:
+  un agente que se auto-reanuda tras un error fatal anula el propósito del estado.
+- Verificado con un test de subprocess y `kill()` real, además de los seis tests
+  en proceso, uno por estado.
+
+---
+
+## ADR-012 — `WARNING` es una severidad, no un estado
+
+**Fecha**: 2026-08-12
+**Estado**: Aceptado
+
+### Contexto
+
+La especificación lista `WARNING` junto a `ERROR` y `SLEEPING` como «estado
+especial»: «loggear, continuar con precaución, no detener».
+
+### Decisión
+
+No se modela como `AgentState`. Un estado en el que nunca permaneces y del que
+siempre sales hacia donde venías no es un estado: es una severidad. Modelarlo
+como estado obligaría a cada estado a recordar su predecesor y, sobre todo,
+haría que `agent_state.current_state = 'WARNING'` fuera **irreanudable** tras un
+crash: ¿reanudar dónde?
+
+Se maneja dentro de cada handler: log a nivel WARNING, registro `AGENT_WARNING`
+en auditoría, y el ciclo continúa. `CycleResult.warnings` los acumula.
+
+### Consecuencias
+
+- La tabla de recuperación cubre exactamente los seis estados reanudables.
+- Los avisos siguen siendo visibles y auditables, sin contaminar la máquina de
+  estados.
+
+---
+
+## ADR-013 — Deuda registrada: acoplamientos que T6 no arregla
+
+**Fecha**: 2026-08-12
+**Estado**: Aceptado
+
+### Contexto
+
+Al cablear el agente aparecieron tres asperezas preexistentes. Arreglarlas
+excede el alcance de «conectar lo que ya existe», así que se registran en vez de
+resolverse en silencio.
+
+### Observaciones
+
+1. **`ApprovedOrder` no tiene `price` ni `strategy_id`** (`risk/types.py:89-100`).
+   `PaperBroker` lo sortea con `getattr(order, "strategy_id", "unknown")`
+   (`paper_broker.py:255`), así que toda orden del agente queda registrada con
+   `strategy_id="unknown"` en `order_intentions`. El precio **no se deriva** de
+   `notional / approved_quantity` (perdería precisión en divisiones no exactas):
+   se transporta en un `price_map` lateral indexado por `order_id` y se persiste
+   en `agent_pending_orders.price`.
+
+2. **`RiskEngine.evaluate` ignora el nivel de riesgo previo**: hardcodea
+   `current_level=RiskLevel.NORMAL` (`engine.py:475`), con lo que la histéresis de
+   `recovery_days` está efectivamente muerta. El agente no lo compensa.
+
+3. **`SandboxedDataView` vive en `qtrader.backtesting.engine`** y `momentum.py` la
+   referencia bajo `TYPE_CHECKING` (`momentum.py:28-29`). El agente no puede
+   importar `backtesting`, así que define su propia `_InMemoryDataView`
+   duck-typed, con la guarda anti-look-ahead incluida. El contrato de
+   import-linter usa `allow_indirect_imports = true` porque el import transitivo
+   vía `momentum` es solo de tipos y no existe en runtime. Moverla a `qtrader/data/`
+   sería la solución limpia y requiere su propio ADR.
+
+### Consecuencias
+
+- Existen **dos** `RiskLevel` y **dos** `RiskDecision` en el repositorio: los de
+  `qtrader.risk.types` (NORMAL/CAUTION/RISK_OFF/HALT) y los legacy de
+  `qtrader.core.types` (APPROVE/REDUCE/REJECT). El agente usa **solo** los de
+  `risk.types`. Unificarlos es trabajo pendiente.
+- El CLI construye el proveedor sintético y lo inyecta, de modo que `agents/`
+  nunca importa `backtesting` de forma directa.

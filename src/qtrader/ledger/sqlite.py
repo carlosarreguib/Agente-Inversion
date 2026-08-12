@@ -143,6 +143,22 @@ class SQLiteLedger:
             row = cursor.fetchone()
             return int(row[0])
 
+    def count_audit_with_prefix(self, prefix: str) -> int:
+        """Cuenta registros de audit_log cuyo record_id empieza por `prefix`.
+
+        Lo usa el agente (T6) para sembrar su contador de secuencia al reanudar
+        tras un crash: record_audit hace INSERT OR IGNORE sobre record_id UNIQUE,
+        así que un contador reiniciado a 0 haría que los registros reanudados
+        colisionasen en silencio con los previos, perdiéndolos.
+        """
+        with closing(sqlite3.connect(self._db_path)) as conn:
+            cursor = conn.execute(
+                "SELECT count(*) FROM audit_log WHERE record_id LIKE ? || '%'",
+                (prefix,),
+            )
+            row = cursor.fetchone()
+            return int(row[0])
+
     def get_last_record_hash(self) -> str:
         """Devuelve el record_hash del último registro en audit_log, o NULL_HASH si vacío."""
         with closing(sqlite3.connect(self._db_path)) as conn:

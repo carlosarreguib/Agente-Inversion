@@ -136,3 +136,21 @@ name = "safety does not import brokers agents or portfolio"
 type = "forbidden"
 source_modules = ["qtrader.safety"]
 forbidden_modules = ["qtrader.brokers", "qtrader.agents", "qtrader.portfolio"]
+
+# El agente solo orquesta los modulos que ya existen. No puede importar
+# backtesting ni research: SandboxedDataView vive en backtesting y reutilizarla
+# acoplaria el camino de produccion al de simulacion. El agente define su propia
+# vista de datos duck-typed (_InMemoryDataView en trader.py) y el CLI le inyecta
+# el proveedor sintetico, de forma que agents/ nunca lo importa.
+#
+# allow_indirect_imports: qtrader.strategies.momentum tiene un import de
+# qtrader.backtesting.engine bajo TYPE_CHECKING (momentum.py:28-29) que
+# import-linter cuenta aunque no exista en runtime. Es una deuda previa a T6,
+# registrada en el ADR-013; el contrato vigila los imports DIRECTOS de agents/,
+# que son los que esta tarea puede controlar.
+[[tool.importlinter.contracts]]
+name = "agents does not import backtesting or research"
+type = "forbidden"
+source_modules = ["qtrader.agents"]
+forbidden_modules = ["qtrader.backtesting", "qtrader.research"]
+allow_indirect_imports = true

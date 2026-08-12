@@ -624,6 +624,85 @@ def _cmd_audit_verify(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _cmd_run(args: argparse.Namespace) -> None:
+    """Ejecuta un ciclo del agente trader (T6)."""
+    import asyncio
+    import logging
+    from datetime import UTC, date, datetime
+
+    # production requiere variable de entorno + fichero de autorización con
+    # caducidad + confirmación interactiva (CLAUDE.md §2.10). Nada de eso
+    # existe todavía: rechazar explícitamente en vez de fingir que funciona.
+    if args.mode == "production":
+        print(
+            "ERROR: --mode production no está soportado.\n"
+            "Requiere variable de entorno + fichero de autorización con "
+            "caducidad + confirmación interactiva (CLAUDE.md §2.10).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    from qtrader.agents.runner import run_once
+    from qtrader.agents.states import RunPhase
+    from qtrader.agents.trader import AgentHalted
+    from qtrader.backtesting.synthetic import SyntheticMultiProvider
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+
+    trading_date = (
+        date.fromisoformat(args.date) if args.date else date.today()
+    )
+    phase = (
+        RunPhase.POST_CLOSE if args.phase == "post-close" else RunPhase.PRE_OPEN
+    )
+
+    # El CLI construye el proveedor y lo inyecta: agents/ no puede importar
+    # qtrader.backtesting (contrato de import-linter).
+    provider = SyntheticMultiProvider(
+        base_seed=args.seed,
+        start_date=datetime(2022, 1, 3, tzinfo=UTC),
+    )
+
+    try:
+        result = asyncio.run(
+            run_once(
+                provider=provider,
+                phase=phase,
+                trading_date=trading_date,
+                mode=args.mode,
+                agent_db=args.agent_db,
+                ledger_db=args.ledger_db,
+                broker_db=args.broker_db,
+                exec_db=args.exec_db,
+                halt_path=args.halt_path,
+            )
+        )
+    except AgentHalted as exc:
+        print(f"CICLO DETENIDO: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Ciclo:        {result.cycle_id}")
+    print(f"Fase:         {result.phase.value}")
+    print(f"Fecha:        {result.trading_date.isoformat()}")
+    print(f"Estados:      {' -> '.join(s.value for s in result.states_entered)}")
+    if result.risk_level is not None:
+        print(f"Nivel riesgo: {result.risk_level.value}")
+    print(f"Órdenes:      {result.orders_submitted} enviadas, "
+          f"{result.orders_blocked} bloqueadas")
+    print(f"Fills:        {result.fills}")
+    if result.toctou_max_ms > 0:
+        print(f"TOCTOU máx:   {result.toctou_max_ms:.1f} ms")
+    if result.warnings:
+        print(f"Avisos:       {len(result.warnings)}")
+        for warning in result.warnings[:10]:
+            print(f"  - {warning}")
+    if result.halted_by_kill_switch:
+        print("DETENIDO POR KILL SWITCH")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="qtrader",
@@ -747,6 +826,49 @@ def main() -> None:
     )
 
     # ------------------------------------------------------------------
+    # run — agente trader (T6)
+    # ------------------------------------------------------------------
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Ejecuta un ciclo del agente trader",
+    )
+    run_parser.add_argument(
+        "--once",
+        action="store_true",
+        required=True,
+        help="Ejecuta un único ciclo y termina (único modo soportado)",
+    )
+    run_parser.add_argument(
+        "--mode",
+        default="paper",
+        choices=["paper", "development", "production"],
+        help="Modo de operación (default: paper)",
+    )
+    run_parser.add_argument(
+        "--phase",
+        default="post-close",
+        choices=["post-close", "pre-open"],
+        help="Fase del ciclo (default: post-close)",
+    )
+    run_parser.add_argument(
+        "--date",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Fecha de la sesión (default: hoy)",
+    )
+    run_parser.add_argument("--agent-db", default="data/agent.db")
+    run_parser.add_argument("--ledger-db", default="data/state.db")
+    run_parser.add_argument("--broker-db", default="data/paper_broker.db")
+    run_parser.add_argument("--exec-db", default="data/execution.db")
+    run_parser.add_argument("--halt-path", default="data/HALT")
+    run_parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Semilla del generador de datos sintéticos (default: 42)",
+    )
+
+    # ------------------------------------------------------------------
     # research
     # ------------------------------------------------------------------
     research_parser = subparsers.add_parser(
@@ -800,6 +922,8 @@ def main() -> None:
         _cmd_demo(args)
     elif args.command == "backtest":
         _cmd_backtest(args)
+    elif args.command == "run":
+        _cmd_run(args)
     elif args.command == "audit":
         if args.audit_command == "verify":
             _cmd_audit_verify(args)
