@@ -15,7 +15,24 @@ Las reglas que gobiernan el proyecto están en [CLAUDE.md](CLAUDE.md) (invariant
 
 ---
 
-## Estado actual: Fase 0 completada
+## Estado actual: Fases 0-6 completadas
+
+| Fase | Contenido | Estado |
+|---|---|---|
+| 0 | Tracer bullet: esqueleto, contratos, camino end-to-end, auditoría | Completada |
+| 1 | Capa de datos: proveedores, validación, cross-validación, universo point-in-time | Completada |
+| 2 | Backtester event-driven, modelo de costes, golden backtest, walk-forward | Completada |
+| 3 | Momentum 12-1 cross-sectional y framework de métricas | Completada |
+| 4 | Construcción de cartera, Risk Engine y las tres capas de defensa | Completada |
+| 5 | Paper broker con idempotencia, recuperación ante crash y kill switch | Completada |
+| 6 | Agente trader determinista como máquina de estados | Completada |
+| 7-12 | Observabilidad, Researcher, robustez, paper trading, IBKR | Pendientes |
+
+**573 tests** (572 pasan, 1 se omite en Windows), `mypy --strict` en verde sobre 59 ficheros y 13 contratos de `import-linter` sin romper. Ningún test accede a la red.
+
+---
+
+## Fase 0 — Tracer bullet
 
 La Fase 0 es un **tracer bullet**: un camino end-to-end mínimo que atraviesa *todas* las capas de la arquitectura antes de construir ninguna en profundidad. Su propósito no es producir un sistema útil, sino validar que las fronteras entre módulos encajan antes de invertir en ellos. Cada capa existe en su versión más simple defendible.
 
@@ -61,78 +78,125 @@ Cada decisión registra el git SHA del código, el hash de la configuración, el
 
 ---
 
+## Fase 1 — Datos
+
+Capa de proveedor abstracta (`Protocol` en [src/qtrader/data/provider.py](src/qtrader/data/provider.py)) con implementaciones sintética, CSV, Tiingo y yfinance. **Precios sin ajustar** más tabla separada de corporate actions: el parámetro `as_of` de `get_bars()` es obligatorio y aplica solo las corporate actions conocidas en esa fecha, que es lo que impide el look-ahead en los ajustes.
+
+[src/qtrader/data/validation.py](src/qtrader/data/validation.py) implementa ocho detecciones — huecos, duplicados, OHLC inconsistente, precios negativos, volumen cero, saltos de N sigmas, series congeladas y discrepancia entre fuentes. Devuelve una lista de hallazgos con severidad `WARN`, `EXCLUDE` o `HALT`; **no filtra ni "arregla" nada**, la decisión es del llamante. Dato sospechoso → instrumento excluido ese día y registrado en auditoría, nunca interpolado. `HALT` está reservado a corrupción sistemática del proveedor (más del 50 % de barras con precio negativo).
+
+Cross-validación de todo cierre entre dos fuentes, con discrepancia > 0,5 % marcada `SUSPECT`. Universo point-in-time de 45 instrumentos en [config/universe.yaml](config/universe.yaml), filtrado por `declared_on <= as_of` y nunca recalculado retroactivamente.
+
+## Fase 2 — Backtester
+
+Motor event-driven ([src/qtrader/backtesting/engine.py](src/qtrader/backtesting/engine.py)) con la regla dura de ejecución en T+1, verificada por un test **oráculo**: una estrategia que intenta mirar el futuro a través de `SandboxedDataView` provoca una excepción del motor en lugar de ganar dinero.
+
+Modelo de costes completo en [src/qtrader/costs.py](src/qtrader/costs.py) — comisión, spread por categoría de instrumento, slippage proporcional a √(tamaño/ADV) y límite de participación en el volumen. No existe modo "sin costes" salvo como comparación explícita en un test.
+
+Golden backtest con resultados numéricos congelados en [tests/backtesting/golden_reference.json](tests/backtesting/golden_reference.json) como red de seguridad contra regresiones del motor. Walk-forward con purga y embargo, y registro de **cada** configuración evaluada —incluidas las descartadas— en `trials.db`, para poder calcular el Deflated Sharpe Ratio con el N real de intentos.
+
+## Fase 3 — Primera estrategia
+
+Cross-sectional momentum 12-1 ([src/qtrader/strategies/momentum.py](src/qtrader/strategies/momentum.py)), la estrategia más replicada de la literatura, usada como **calibración del sistema y no como fuente de alpha**. Requiere 253 barras de historia y devuelve señales solo para el quintil superior; sin historia suficiente no inventa nada.
+
+Framework de métricas con intervalos de confianza bootstrap en [src/qtrader/backtesting/full_metrics.py](src/qtrader/backtesting/full_metrics.py). Todo informe muestra el Sharpe con y sin el haircut declarado por survivorship bias residual y tracking error proxy→UCITS.
+
+## Fase 4 — Portfolio y Risk Engine
+
+[src/qtrader/portfolio/construction.py](src/qtrader/portfolio/construction.py) construye la cartera objetivo con inverse-vol weighting y caps iterativos por posición, sector y región aplicados hasta punto fijo. Tiene una banda de no-rebalanceo: cuando no hace falta rebalancear devuelve los pesos actuales con `quantity=0`, un detalle que el agente debe tratar con cuidado (ver Fase 6).
+
+[src/qtrader/risk/engine.py](src/qtrader/risk/engine.py) es una **función pura** con niveles `NORMAL → CAUTION → RISK_OFF → HALT` según drawdown desde máximo, cada uno con su multiplicador de tamaño. Nunca lanza excepciones por rechazos de negocio: devuelve siempre un `RiskDecision` con las órdenes aprobadas y las rechazadas con motivo explícito. Sus **property-based tests con `hypothesis`** verifican que ninguna combinación de cartera y órdenes arbitrarias produce una orden que viole un límite duro.
+
+Las **tres capas de defensa** son independientes por diseño, cada una con su config y sus tests: el Risk Engine, el `ExecutionRateLimiter` ([src/qtrader/execution/rate_limiter.py](src/qtrader/execution/rate_limiter.py), con límites deliberadamente distintos y estado en SQLite que sobrevive reinicios) y el `BrokerSanityChecker` ([src/qtrader/execution/sanity.py](src/qtrader/execution/sanity.py), que valida símbolo, desviación de precio, fracción del ADV y calendario de mercado). [tests/execution/test_broken_risk_engine.py](tests/execution/test_broken_risk_engine.py) inyecta un Risk Engine deliberadamente roto que aprueba todo y verifica que las otras dos capas siguen bloqueando la orden absurda.
+
+## Fase 5 — Paper broker y kill switch
+
+[src/qtrader/brokers/interface.py](src/qtrader/brokers/interface.py) define un `Protocol` async diseñado contra la semántica de IBKR para que el swap sea de una línea de config. `PaperBroker` simula fills con **el mismo código de costes que el backtester, no una copia**.
+
+Idempotencia y recuperación: `client_order_id` determinista (SHA-256 de fecha, símbolo, lado, estrategia y secuencia), write-ahead log de intenciones persistido **antes** de llamar al broker, y `reconcile()` al arranque. [tests/brokers/test_idempotency.py](tests/brokers/test_idempotency.py) lanza subprocesos y los mata con `kill()` en cada estado del ciclo de órdenes, verificando que la recuperación no duplica ni pierde nada y que el invariante de caja se mantiene.
+
+**Kill switch** ([src/qtrader/safety/kill_switch.py](src/qtrader/safety/kill_switch.py)) como fichero fuera del proceso del agente. `is_active()` no cachea —cada llamada lee del disco— y ante un error de I/O devuelve `True`: **fail-safe, nunca fail-open**. `deactivate()` exige un token de confirmación literal y está prohibido en modo `production`. En POSIX el test verifica que el agente recibe `PermissionError` al intentar borrar el fichero; en Windows sin admin se usa un backend SQLite con un trigger que aborta cualquier `DELETE`.
+
+El **dead man's switch** ([src/qtrader/safety/watchdog.py](src/qtrader/safety/watchdog.py)) corre en un hilo daemon: si no recibe `heartbeat()` en 180 segundos activa el kill switch con `WATCHDOG_TIMEOUT`. Una vez iniciado, el agente no puede detenerlo.
+
+## Fase 6 — Agente trader (aún sin LLM)
+
+Orquestador **determinista** del ciclo diario. No añade lógica de negocio: conecta en orden los módulos que ya existen. El LLM llega en la Fase 8, no aquí.
+
+Dos ejecuciones diarias como máquina de estados explícita ([src/qtrader/agents/states.py](src/qtrader/agents/states.py), con las tablas de transición y recuperación como datos, no como `if/elif`):
+
+```
+POST-CLOSE:  LOADING_DATA → GENERATING_SIGNALS → EVALUATING_RISK → SLEEPING
+PRE-OPEN:    RECONCILING → SUBMITTING_ORDERS → MONITORING → SLEEPING
+```
+
+El estado se persiste **antes** de cada handler en `data/agent.db`, que el agente posee con DDL idempotente propio: nunca llama a `SQLiteLedger.initialize()`, que borraría la cadena de auditoría.
+
+**La regla de recuperación más importante: un crash en `SUBMITTING_ORDERS` reanuda en `RECONCILING`, nunca reintentando los envíos.** Si el proceso muere a mitad del lote, el conjunto de órdenes que llegó al broker es desconocido; reintentar a ciegas duplicaría exactamente las que sí llegaron. Solo tras reconciliar —consultando `get_order_status()` por cada `client_order_id`— queda bien definido qué reenviar. Por eso el `client_order_id` y su número de secuencia se commitean **antes** del `await submit_order`. Por el mismo motivo `GENERATING_SIGNALS` y `EVALUATING_RISK` reanudan en `LOADING_DATA`: dependen de datos en memoria que murieron con el proceso.
+
+El kill switch se comprueba al inicio de **cada** estado e inmediatamente antes de **cada** envío, sin ningún `await` entre la comprobación y el `submit_order` para no abrir la ventana TOCTOU (medida y registrada; en las ejecuciones reales queda en 16 ms frente al presupuesto de 100 ms).
+
+El agente **nunca activa el kill switch**: lo tipa como un `Protocol` de solo lectura, así `activate()` no está siquiera en su superficie de tipos. Cuando un estado falla, pide el HALT a través de un *halt requester* inyectado; en producción ese requester es `None` y quien activa el HALT es el Watchdog, que vive fuera del proceso que ha fallado. La justificación está en ADR-009.
+
+---
+
 ## Uso
 
 ```bash
-uv sync                                    # instalar dependencias
-uv run qtrader demo --days 60              # camino end-to-end completo
-uv run qtrader audit verify                # verificar la cadena de auditoría
+uv sync                                                   # instalar dependencias
+
+# Agente trader — un ciclo completo son dos ejecuciones (señal en T, ejecución en T+1)
+uv run qtrader run --once --mode paper --phase post-close --date 2024-06-14
+uv run qtrader run --once --mode paper --phase pre-open   --date 2024-06-17
+
+uv run qtrader audit verify --db data/state.db            # verificar la cadena
+uv run qtrader backtest --strategy momentum --start 2020-01-01 --end 2023-12-31
+uv run qtrader universe show --date 2024-06-14
+uv run qtrader demo --days 60                             # tracer bullet de Fase 0
 ```
 
-`demo` acepta `--days`, `--seed` y `--db`. Ejecutarlo dos veces con la misma semilla produce resultados idénticos.
+`run` acepta además `--agent-db`, `--ledger-db`, `--broker-db`, `--exec-db`, `--halt-path` y `--seed`. `--once` es obligatorio: la planificación continua es trabajo de la Fase 7 y marcarlo así evita un flag que no hace nada. **`--mode production` rechaza arrancar**: requiere variable de entorno, fichero de autorización con caducidad y confirmación interactiva, nada de lo cual existe todavía.
 
 ### Verificación
 
-Salida real de los comandos de aceptación en el commit `38c8883`:
+Salida real de los comandos de aceptación en el commit `3dc0dc5`:
 
 ```
+$ uv run qtrader run --once --mode paper --phase post-close --date 2024-06-14
+Estados:      LOADING_DATA -> GENERATING_SIGNALS -> EVALUATING_RISK -> SLEEPING
+Nivel riesgo: NORMAL
+Órdenes:      0 enviadas, 0 bloqueadas
+Fills:        0
+Avisos:       5
+  - EXCLUDED:EWJ:price_spike
+  - EXCLUDED:QUAL:price_spike
+  - EXCLUDED:SIZE:price_spike
+  - EXCLUDED:VNQ:price_spike
+  - EXCLUDED:XLF:price_spike
+
+$ uv run qtrader run --once --mode paper --phase pre-open --date 2024-06-17
+Estados:      RECONCILING -> SUBMITTING_ORDERS -> MONITORING -> SLEEPING
+Órdenes:      5 enviadas, 3 bloqueadas
+Fills:        5
+TOCTOU máx:   16.0 ms
+
+$ uv run qtrader audit verify --db data/state.db
+OK
+
 $ uv run pytest -q
-..............................................................           [100%]
-62 passed in 0.96s
+572 passed, 1 skipped in 28.80s
 
 $ uv run mypy src --strict
-Success: no issues found in 15 source files
+Success: no issues found in 59 source files
 
-$ uv run ruff check .
-All checks passed!
-
-$ uv run qtrader demo --days 60
-Equity inicial:  1000,00 €
-Equity final:    996,27 €
-Nº de trades:    4
-P&L:             -3,73 €
-
-$ uv run qtrader audit verify
-OK
+$ uv run lint-imports
+Contracts: 13 kept, 0 broken.
 ```
 
-La demo pierde 3,73 € sobre datos sintéticos aleatorios en 60 sesiones. Eso es exactamente lo esperado y no es un problema a corregir: una SMA20 sobre un paseo aleatorio no tiene edge, y las cuatro operaciones pagan comisión. **Un resultado bueno aquí sería la señal de alarma**, no este.
+Las cinco exclusiones por `price_spike` son el comportamiento correcto: los datos sintéticos generan saltos que el validador marca, y el agente **excluye esos instrumentos del día en lugar de interpolar**. De las ocho órdenes aprobadas por el Risk Engine, tres las bloquean las capas 2 y 3 —una por sanidad y dos por el límite de 5 órdenes por minuto del rate limiter— y las cinco restantes se ejecutan. El test omitido es el de permisos POSIX del kill switch, que no aplica en Windows y se cubre allí con el backend SQLite.
 
 ---
 
 ## Lo que queda por hacer
-
-La Fase 0 valida la forma de la arquitectura, no su contenido. Prácticamente todo el sistema está por construir: de los diez componentes que atraviesa la demo, cada uno existe en la versión más simple que permitía cerrar el circuito. Lo que sigue.
-
-### Fase 1 — Datos
-
-Capa de proveedor abstracta (`Protocol`) con implementaciones sintética, CSV y de proveedor real. Almacenamiento en Parquet particionado por año con índice DuckDB, **precios sin ajustar** más tabla separada de corporate actions. El parámetro `as_of` de `get_bars()` aplica solo las corporate actions conocidas en esa fecha — es lo que impide el look-ahead en los ajustes y no es opcional.
-
-Validación de datos con ocho detecciones (huecos, duplicados, OHLC inconsistente, precios cero, volumen cero, saltos de N sigmas sin corporate action, series congeladas). Política: dato sospechoso → instrumento excluido ese día y registrado en auditoría; **nunca interpolar ni rellenar hacia adelante en silencio**. Cross-validación de todo cierre entre Tiingo y yfinance, con discrepancia > 0,5 % marcada `SUSPECT`. Universo point-in-time con calendario de mercado, guardado con fecha y nunca recalculado retroactivamente.
-
-### Fase 2 — Backtester
-
-Motor event-driven con la regla dura de ejecución en T+1, verificada por un test "oráculo": una estrategia que intenta hacer trampa mirando el futuro debe provocar una excepción del motor, no ganar dinero. Modelo de costes completo — comisión, spread, slippage proporcional a √(tamaño/ADV) y límite de participación en el volumen. Backtest "golden" con resultados numéricos congelados como red de seguridad contra regresiones. Walk-forward con purga y embargo, y registro obligatorio de **cada** configuración evaluada, incluidas las descartadas, para poder calcular el Deflated Sharpe Ratio con el N real de intentos.
-
-### Fase 3 — Primera estrategia
-
-Cross-sectional momentum 12-1, la estrategia más replicada de la literatura, usada como **calibración del sistema y no como fuente de alpha**. El criterio de aceptación es que caiga dentro del rango publicado (Sharpe 0,3-0,7, MaxDD 30-50 %); si sale Sharpe 2,5 hay un bug o leakage y se busca antes de continuar. Framework de métricas con intervalos de confianza bootstrap.
-
-### Fase 4 — Portfolio y Risk Engine
-
-Construcción de cartera con volatility targeting y equal risk contribution simplificado (mean-variance queda descartado en fase inicial: con este capital y covarianzas ruidosas, optimiza el ruido). Risk Engine completo con niveles `NORMAL → CAUTION → RISK_OFF → HALT` según drawdown desde máximo. Sus **property-based tests con `hypothesis` son el test más importante del repositorio**: ninguna combinación de cartera y órdenes arbitrarias puede producir una orden que viole un límite duro.
-
-Aquí se construyen las capas 2 y 3 de defensa — rate limits en el Execution Engine y validación de sanidad en el Broker Interface — con config y tests propios, **independientes del Risk Engine**. El test que las valida inyecta un Risk Engine deliberadamente roto que aprueba todo y verifica que las otras dos capas siguen bloqueando la orden absurda.
-
-### Fase 5 — Paper broker
-
-Interfaz común diseñada ya contra la semántica de IBKR para que el swap sea de una línea de config. El paper broker simula fills con **el mismo código de costes que el backtester, no una copia**; correr el mismo periodo en ambos debe dar resultados idénticos, y si divergen uno de los dos está mal.
-
-Idempotencia y recuperación: `client_order_id` determinista, write-ahead log de intenciones antes de llamar al broker, reconciliación al arranque. Los tests matan el proceso con `SIGKILL` en cada estado del ciclo de órdenes y verifican que la recuperación no duplica ni pierde nada. Kill switch como fichero fuera del proceso del agente, que el agente puede leer pero **no puede borrar** — con un test que lo intenta y espera `PermissionError`.
-
-### Fase 6 — Agente trader (aún sin LLM)
-
-Orquestador determinista del ciclo diario como máquina de estados explícita con estados persistidos, de modo que un reinicio a mitad de ciclo se reanude correctamente en lugar de repetir trabajo.
 
 ### Fase 7 — Observabilidad
 
@@ -160,24 +224,35 @@ Solo tras firma humana explícita y registrada. Paper account de IBKR → tres m
 
 ```
 src/qtrader/
-  core/types.py        contratos Pydantic congelados
-  data/synthetic.py    proveedor de barras deterministas
-  strategies/sma.py    señal SMA20
-  risk/engine.py       risk engine puro
-  brokers/paper.py     simulación de fills
-  ledger/sqlite.py     persistencia y cadena de auditoría
-  engine.py            orquestación end-to-end
-  cli.py               comandos demo y audit
-tests/                 62 tests, sin acceso a red
-docs/                  plan, revisión crítica y ADRs
+  core/types.py          contratos Pydantic congelados
+  data/                  proveedores, validación, cross-validación, universo
+  strategies/            SMA20 (Fase 0) y momentum 12-1 cross-sectional
+  backtesting/           motor event-driven, métricas, golden backtest
+  research/              walk-forward, registro de trials, Deflated Sharpe
+  portfolio/             construcción con inverse-vol y caps iterativos
+  risk/                  risk engine puro con tipos propios (capa 1)
+  execution/             rate limiter (capa 2) y sanity checker (capa 3)
+  brokers/               interfaz async, paper broker, client_order_id
+  safety/                kill switch y watchdog
+  agents/                máquina de estados del agente trader
+  ledger/sqlite.py       persistencia y cadena de auditoría
+  costs.py               modelo de costes compartido backtest/paper
+  cli.py                 run, backtest, demo, audit, universe, research
+tests/                   573 tests, sin acceso a red
+docs/                    plan, revisión crítica y 13 ADRs
 ```
 
-Dependencias de capas (se verificarán con `import-linter` en Fase 8): `strategies` no importa `execution`; `execution` no importa `agents`; `agents/llm` no importa `execution` ni `brokers`; `risk` no importa nada fuera de `core`.
+Dependencias de capas verificadas con `import-linter` (13 contratos): `strategies` no importa `execution`; `risk` no importa nada fuera de `core`; `execution` no importa `risk` ni `brokers`; `safety` no importa `brokers` ni `agents`; `agents` no importa `backtesting` ni `research`.
+
+Cada componente con estado posee **su propio fichero SQLite**: `state.db` (ledger y auditoría), `agent.db` (estado del agente y órdenes pendientes), `paper_broker.db` (órdenes, posiciones y caja), `execution.db` (rate limiter) y `trials.db` (registro de configuraciones). Cuatro dueños, sin interferencias destructivas.
 
 ---
 
 ## Notas de mantenimiento
 
-- **`.gitignore` excluye los módulos `data/` del código fuente.** El patrón `data/` de la línea 21 pretende excluir el directorio de estado en la raíz, pero al no llevar prefijo `/` casa a cualquier profundidad: `src/qtrader/data/` y `tests/data/` están sin versionar pese a ser código fuente. `git status` sale limpio y el fallo pasa desapercibido hasta que alguien clone el repositorio y la demo no arranque. Corregir a `/data/` y añadir los ficheros.
-- Los `AuditRecord` de T0.3 llevan defaults en los campos nuevos (`git_sha`, `config_hash`, `parameters`, `risk_output`, `decision`, `reason`) para no romper los tests de T0.1. Conviene revisarlo cuando el formato de auditoría se estabilice.
-- La configuración del engine es todavía un stub en el propio módulo (`_CONFIG_STUB`); pasa a fichero YAML en fases posteriores.
+- **`.gitignore` excluye módulos `data/` del código fuente.** El patrón `data/` de la línea 21 pretende excluir el directorio de estado en la raíz, pero al no llevar prefijo `/` casa a cualquier profundidad: `src/qtrader/data/` y `tests/data/` siguen sin versionar pese a ser código fuente (`git ls-files src/qtrader/data` no devuelve nada). `git status` sale limpio y el fallo pasa desapercibido hasta que alguien clone el repositorio y nada arranque. Corregir a `/data/` y añadir los ficheros. **Sigue pendiente y ahora afecta a toda la capa de datos de la Fase 1.**
+- **Existen dos `RiskLevel` y dos `RiskDecision`.** Los de `qtrader.risk.types` (`NORMAL/CAUTION/RISK_OFF/HALT`) son los vigentes; los de `qtrader.core.types` (`APPROVE/REDUCE/REJECT`) son legacy de la Fase 0 y solo los usa `engine.py`. Unificarlos está pendiente (ADR-013).
+- **`ApprovedOrder` no lleva `price` ni `strategy_id`.** El precio se transporta en un mapa lateral indexado por `order_id` en lugar de derivarlo de `notional / quantity`, que perdería precisión. `PaperBroker` registra `strategy_id="unknown"` vía `getattr`.
+- **`RiskEngine.evaluate` ignora el nivel de riesgo previo**: fija `current_level=NORMAL`, con lo que la histéresis de `recovery_days` está efectivamente inactiva.
+- **`SandboxedDataView` vive en `backtesting`** y `momentum.py` la referencia bajo `TYPE_CHECKING`. El agente define su propia vista duck-typed para no acoplar producción con simulación; el contrato de `import-linter` usa `allow_indirect_imports` por ese import transitivo de solo tipos. Moverla a `data/` sería la solución limpia.
+- La configuración del engine de Fase 0 es todavía un stub en el propio módulo (`_CONFIG_STUB`); el resto del sistema ya carga YAML desde `config/`.
