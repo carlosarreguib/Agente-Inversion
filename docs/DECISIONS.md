@@ -364,3 +364,120 @@ notional ≈ 1.000 M€) y se verifica que:
   el comportamiento está cubierto por tests de integración.
 - El date de la sesión NYSE en los tests debe ser una sesión real (no festivo):
   2024-01-15 es MLK Day (festivo NYSE); se usa 2024-01-16 (martes ordinario).
+
+---
+
+## ADR-008 — Idempotencia y recuperación ante crash: WAL-first con order_intentions
+
+**Fecha**: 2026-08-12  
+**Estado**: Aceptado
+
+### Contexto
+
+CLAUDE.md §2.4 exige que toda orden lleve un `client_order_id` determinista y que
+su intención se persista en un write-ahead log **antes** de la llamada al broker.
+T5.2 implementó `PaperBroker` con estado en SQLite pero sin esta garantía: si el
+proceso moría entre el `submit_order` y el registro del fill, podía haber ambigüedad
+sobre si la orden había llegado al broker o no.
+
+T5.3 implementa la garantía completa en `PaperBroker`.
+
+### Decisiones
+
+**`client_order_id` determinista**:
+
+```
+client_order_id = SHA256(
+    trading_date.isoformat() + symbol + side.value +
+    strategy_id + str(sequence_number)
+)[:16]
+```
+
+`sequence_number` se persiste en `order_sequence` (tabla SQLite, 1 fila).
+Se incrementa en la misma transacción que el INSERT en `order_intentions` — si
+el proceso muere antes de este punto, al arrancar el seq ya está incrementado
+y el id nunca se reutiliza. Mismo input → mismo id, siempre.
+
+**Flujo WAL-first** (orden garantizado, sin excepción):
+
+1. `BEGIN` → `INSERT order_intentions` (status=`PENDING_UNKNOWN`) + `COMMIT`
+2. Llamada al broker (`INSERT OR IGNORE` en `orders`, status=`SUBMITTED`)
+3. `UPDATE order_intentions → SUBMITTED`
+4. `advance_to()` ejecuta el fill en `orders` + `cash_ledger`
+5. `UPDATE order_intentions → CONFIRMED`
+
+**Tabla `order_intentions`** (nueva en T5.3):
+
+```sql
+CREATE TABLE order_intentions (
+    client_order_id TEXT PRIMARY KEY,
+    symbol TEXT, side TEXT, quantity TEXT, strategy_id TEXT, trading_date TEXT,
+    status TEXT,   -- PENDING_UNKNOWN | SUBMITTED | CONFIRMED | FAILED
+    created_at TEXT, updated_at TEXT,
+    broker_order_id TEXT, error_message TEXT
+);
+```
+
+`INSERT OR IGNORE` en todos los pasos: reenviar un `client_order_id` ya existente
+no sobreescribe el registro anterior.
+
+**`reconcile()`** en `__init__` de `PaperBroker`:
+
+Carga intenciones con `status NOT IN ('CONFIRMED', 'FAILED')` y para cada una
+consulta el estado en la tabla `orders` (sin I/O de red — el paper broker es local).
+Según el estado encontrado:
+
+| orders status | Acción |
+|---|---|
+| `UNKNOWN` (sin fila) < 24h | Dejar `PENDING_UNKNOWN` — el llamador reenvía |
+| `UNKNOWN` ≥ 24h | Marcar `FAILED (TIMEOUT)` |
+| `SUBMITTED/PARTIAL/PENDING` | Actualizar a `SUBMITTED` |
+| `FILLED` | Marcar `CONFIRMED` sin duplicar el fill |
+| `CANCELLED/REJECTED` | Marcar `FAILED` |
+
+### Alternativas rechazadas
+
+- **Sin WAL, confiar en idempotencia del broker**: el paper broker no tiene un
+  broker externo real que pueda consultar — el estado está en SQLite local.
+  La tabla `order_intentions` es el WAL que permite distinguir "la orden llegó al
+  broker" de "el proceso murió antes de enviarla".
+
+- **`asyncio.run()` en `reconcile()`**: `get_order_status` es async pero en el
+  paper broker no tiene I/O real. Llamar `asyncio.run()` desde `__init__` falla
+  si hay un event loop activo (tests async). Solución: `reconcile()` consulta
+  SQLite directamente (sync), igual que `get_order_status` pero sin el overhead
+  de asyncio.
+
+- **`_update_intention` sin `with self._conn:`**: el context manager es necesario
+  para hacer commit. Sin él, las actualizaciones de estado quedaban en una
+  transacción abierta no visible para el siguiente proceso que abriera la misma BD.
+  Bug encontrado en tests de integración: la intención quedaba en `PENDING_UNKNOWN`
+  tras `submit_order` porque el UPDATE a `SUBMITTED` nunca se comitteaba.
+
+### Tests de crash
+
+4 tests en `tests/brokers/test_idempotency.py` que verifican los 4 puntos de fallo:
+
+- **crash_1**: Proceso muerto tras `INSERT order_intentions` pero antes de
+  `INSERT orders`. Recovery: `PENDING_UNKNOWN`, 0 órdenes en `orders`. Sin duplicado.
+- **crash_2**: Proceso muerto tras `INSERT orders` pero antes de
+  `UPDATE intentions → SUBMITTED`. Recovery: intentions actualiza a `SUBMITTED`.
+  La orden no se reenvía (broker ya la tiene).
+- **crash_3**: Proceso muerto tras fill en `orders` pero antes de
+  `UPDATE intentions → CONFIRMED`. Recovery: intención marcada `CONFIRMED`.
+  El fill no se duplica. Cash invariant = 15000 − 1000 = 14000.
+- **crash_4**: Proceso muerto a mitad de `advance_to()` (AAA filled, BBB+CCC SUBMITTED).
+  Recovery: AAA queda `CONFIRMED`, BBB+CCC quedan `SUBMITTED` para el siguiente
+  `advance_to()`. Sin duplicado de AAA.
+
+El mecanismo de kill es `process.kill()` (= `TerminateProcess` en Windows), que
+equivale a `SIGKILL` en Unix: sin posibilidad de limpieza, idéntico a un corte de
+corriente desde el punto de vista de la integridad de la BD.
+
+### Consecuencias
+
+- Cualquier reinicio de `PaperBroker` reconcilia el estado sin intervención humana.
+- El import-linter contract "brokers does not import agents or portfolio" se mantiene
+  (11 contratos, 0 rotos).
+- En el broker IBKR real (fase 11), `reconcile()` deberá llamar a la API del broker
+  para `get_order_status` — el mismo patrón, distinta implementación del paso de I/O.

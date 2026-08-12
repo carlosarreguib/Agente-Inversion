@@ -124,3 +124,9 @@ name = "execution does not import risk or agents"
 type = "forbidden"
 source_modules = ["qtrader.execution"]
 forbidden_modules = ["qtrader.risk", "qtrader.agents", "qtrader.brokers"]
+
+[[tool.importlinter.contracts]]
+name = "brokers does not import agents or portfolio"
+type = "forbidden"
+source_modules = ["qtrader.brokers"]
+forbidden_modules = ["qtrader.agents", "qtrader.portfolio"]
