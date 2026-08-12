@@ -25,6 +25,7 @@ dev = [
     "pandas-stubs>=3.0.5.260730",
     "pyarrow-stubs>=20.0.0.20260625",
     "types-pyyaml>=6.0.12.20260724",
+    "hypothesis>=6.165.3",
 ]
 
 [build-system]
@@ -111,3 +112,15 @@ name = "strategies does not import brokers or agents"
 type = "forbidden"
 source_modules = ["qtrader.strategies"]
 forbidden_modules = ["qtrader.brokers", "qtrader.agents", "qtrader.execution"]
+
+[[tool.importlinter.contracts]]
+name = "portfolio does not import brokers or agents"
+type = "forbidden"
+source_modules = ["qtrader.portfolio"]
+forbidden_modules = ["qtrader.brokers", "qtrader.agents", "qtrader.execution"]
+
+[[tool.importlinter.contracts]]
+name = "execution does not import risk or agents"
+type = "forbidden"
+source_modules = ["qtrader.execution"]
+forbidden_modules = ["qtrader.risk", "qtrader.agents", "qtrader.brokers"]

@@ -23,7 +23,9 @@ from qtrader.core.types import (
 )
 from qtrader.data.synthetic import SyntheticProvider
 from qtrader.ledger.sqlite import SQLiteLedger
-from qtrader.risk.engine import evaluate as risk_evaluate
+from qtrader.risk.engine import (  # type: ignore[attr-defined]  # legacy demo: predates T4.2 RiskEngine refactor
+    evaluate as risk_evaluate,
+)
 from qtrader.strategies.sma import generate_signal
 
 _ZERO = Decimal("0")
