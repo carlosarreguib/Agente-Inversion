@@ -624,6 +624,39 @@ def _cmd_audit_verify(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _cmd_dashboard(args: argparse.Namespace) -> None:
+    """Arranca el dashboard Streamlit en 127.0.0.1:8501."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    app_path = Path(__file__).parent / "dashboard" / "app.py"
+    host = getattr(args, "host", "127.0.0.1")
+    port = getattr(args, "port", 8501)
+
+    if host != "127.0.0.1":
+        print(
+            "ERROR: el dashboard solo puede escuchar en 127.0.0.1 (CLAUDE.md §2.8)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    cmd = [
+        sys.executable, "-m", "streamlit", "run",
+        str(app_path),
+        "--server.address", host,
+        "--server.port", str(port),
+        "--server.headless", "true",
+        "--server.fileWatcherType", "none",
+    ]
+    try:
+        subprocess.run(cmd, check=True)
+    except KeyboardInterrupt:
+        pass
+    except subprocess.CalledProcessError as exc:
+        sys.exit(exc.returncode)
+
+
 def _cmd_run(args: argparse.Namespace) -> None:
     """Ejecuta un ciclo del agente trader (T6)."""
     import asyncio
@@ -826,6 +859,25 @@ def main() -> None:
     )
 
     # ------------------------------------------------------------------
+    # dashboard (T7B)
+    # ------------------------------------------------------------------
+    dashboard_parser = subparsers.add_parser(
+        "dashboard",
+        help="Arranca el dashboard Streamlit (127.0.0.1:8501)",
+    )
+    dashboard_parser.add_argument(
+        "--port",
+        type=int,
+        default=8501,
+        help="Puerto de escucha (default: 8501)",
+    )
+    dashboard_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Dirección de bind (solo 127.0.0.1 permitida)",
+    )
+
+    # ------------------------------------------------------------------
     # run — agente trader (T6)
     # ------------------------------------------------------------------
     run_parser = subparsers.add_parser(
@@ -918,7 +970,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command == "demo":
+    if args.command == "dashboard":
+        _cmd_dashboard(args)
+    elif args.command == "demo":
         _cmd_demo(args)
     elif args.command == "backtest":
         _cmd_backtest(args)

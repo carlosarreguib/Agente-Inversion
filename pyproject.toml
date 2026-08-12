@@ -9,6 +9,8 @@ dependencies = [
     "pyarrow>=25.0.1",
     "pydantic>=2.0,<3",
     "pyyaml>=6.0.3",
+    "streamlit>=1.59.1",
+    "structlog>=26.1.0",
 ]
 
 [project.scripts]
@@ -154,3 +156,15 @@ type = "forbidden"
 source_modules = ["qtrader.agents"]
 forbidden_modules = ["qtrader.backtesting", "qtrader.research"]
 allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "monitoring does not import agents brokers or execution"
+type = "forbidden"
+source_modules = ["qtrader.monitoring"]
+forbidden_modules = ["qtrader.agents", "qtrader.brokers", "qtrader.execution"]
+
+[[tool.importlinter.contracts]]
+name = "dashboard does not import agents brokers or execution"
+type = "forbidden"
+source_modules = ["qtrader.dashboard"]
+forbidden_modules = ["qtrader.agents", "qtrader.brokers", "qtrader.execution"]
