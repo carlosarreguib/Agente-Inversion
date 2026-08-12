@@ -130,3 +130,9 @@ name = "brokers does not import agents or portfolio"
 type = "forbidden"
 source_modules = ["qtrader.brokers"]
 forbidden_modules = ["qtrader.agents", "qtrader.portfolio"]
+
+[[tool.importlinter.contracts]]
+name = "safety does not import brokers agents or portfolio"
+type = "forbidden"
+source_modules = ["qtrader.safety"]
+forbidden_modules = ["qtrader.brokers", "qtrader.agents", "qtrader.portfolio"]
