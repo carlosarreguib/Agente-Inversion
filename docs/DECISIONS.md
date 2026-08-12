@@ -151,7 +151,9 @@ fallaron y por qué, y recuperar el estado si el proceso muere a mitad.
 ### Deflated Sharpe Ratio
 
 Se implementa la ecuación 8 de Bailey & López de Prado (2014) usando
-`math.erfinv` (stdlib Python 3.12) en lugar de scipy para mantener el
+la aproximación racional de Abramowitz & Stegun 26.2.17 (en lugar de
+`math.erfinv`, que no está disponible en la build Windows de Python 3.12)
+en lugar de scipy para mantener el
 presupuesto de dependencias bajo. El DSR se calcula sobre todos los trials
 COMPLETED de la misma estrategia en la DB, no solo sobre los del run actual.
 Esto penaliza correctamente el data-mining acumulado a lo largo de varias
@@ -163,5 +165,48 @@ sesiones de investigación.
   el DSR basado en el histórico completo de la DB, no en el run aislado.
 - Cualquier cambio en la fórmula DSR (e.g. sigma_SR corregido por sesgo)
   debe documentarse aquí y regenerar los informes.
+
+---
+
+## ADR-005 — Mark-to-market en el motor y estrategia momentum cross-sectional 12-1
+
+**Fecha**: 2026-08-12
+**Estado**: Aceptado
+
+### Contexto
+
+El motor de backtesting (T2.1) registraba en la equity curve solo el cash disponible,
+no el NAV (Net Asset Value = cash + valor de mercado de posiciones). Para estrategias
+multi-activo como el momentum cross-sectional, casi todo el capital queda invertido en
+posiciones tras el primer rebalanceo. La equity curve de cash caía a ~30 de 15000,
+generando métricas erróneas (Sharpe -10, retorno -99%).
+
+### Opciones consideradas
+
+1. Mantener equity=cash y gestionar el portfolio solo con cash disponible sin
+   reinversión. Produce comportamiento buy-and-hold parcial, no momentum real.
+2. Modificar el motor para calcular NAV en cada ciclo usando los cierres del día.
+3. Calcular NAV en el portfolio y limitar compras al cash disponible con ajuste manual.
+
+### Decisión
+
+Opción 2: el motor calcula `nav = cash + sum(pos.qty * bar.close)` al final de cada
+ciclo antes de registrar en `equity_curve`. `final_equity` en `BacktestResult` refleja
+el NAV del último día. El golden backtest cambió sus métricas (de -60.65% a -0.53% de
+retorno) — cambio legítimo y correcto. `MomentumEqualWeightPortfolio` recalcula el NAV
+localmente y limita las compras nuevas al cash disponible para evitar posiciones
+descubiertas (sin apalancamiento implícito).
+
+### Consecuencias
+
+1. El golden reference (`tests/backtesting/golden_reference.json`) se actualizó con los
+   valores correctos post mark-to-market.
+2. `test_equity_decreases_on_buy` reformulado: comprar acciones transfiere cash a
+   posición (el NAV permanece ≥ 0); el test verifica `final_equity >= 0`.
+3. `SyntheticMultiProvider` añadió caché por símbolo (dict interno): evita regenerar
+   la serie completa en cada llamada, reduciendo el backtest de 14 años de >300 s a ~60 s.
+4. La estrategia momentum declara `declared_on` en el universo para el proveedor
+   sintético como la fecha de inicio del proveedor (no la del YAML) para disponer de
+   historia suficiente de lookback sin depender de datos reales.
 - La invariante de no-look-ahead (§3.1) es verificable leyendo `Fold.train_days`:
   el último elemento siempre es al menos `embargo_days` antes de `test_start`.

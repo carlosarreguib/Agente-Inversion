@@ -63,6 +63,7 @@ class SyntheticMultiProvider:
         self._default_drift = default_drift
         self._default_vol = default_vol
         self._default_base_price = default_base_price
+        self._cache: dict[str, list[Bar]] = {}  # cache de series por simbolo
 
     def _seed_for(self, symbol: str) -> int:
         # hashlib.md5 es deterministico entre procesos (a diferencia de hash() de Python).
@@ -76,8 +77,16 @@ class SyntheticMultiProvider:
         end: datetime,
         as_of: datetime,  # noqa: ARG002 — requerido por Protocol; sin look-ahead en sintéticos
     ) -> list[ValidatedBar]:
-        num_days = (end.date() - self._start_date.date()).days + 2
-        raw_bars = self._generate_bars(symbol, num_days)
+        # Cache de series por simbolo: evita regenerar toda la serie en cada llamada.
+        if symbol not in self._cache:
+            num_days = (end.date() - self._start_date.date()).days + 730
+            self._cache[symbol] = self._generate_bars(symbol, num_days)
+        raw_bars = self._cache[symbol]
+        # Ampliar cache si el rango pedido excede lo generado
+        if raw_bars and raw_bars[-1].timestamp < end:
+            num_days = (end.date() - self._start_date.date()).days + 730
+            self._cache[symbol] = self._generate_bars(symbol, num_days)
+            raw_bars = self._cache[symbol]
         return [
             ValidatedBar(bar=b, quality=DataQuality.OK)
             for b in raw_bars

@@ -1,4 +1,4 @@
-"""Observers del motor de backtesting (T2.1 — stubs; se rellenan en T2.2 y T3.2).
+"""Observers del motor de backtesting.
 
 Patrón observer: el motor llama on_event() en cada BacktestEvent emitido.
 Los observers no deben modificar el estado del motor ni lanzar excepciones
@@ -6,7 +6,15 @@ que interrumpan el bucle (deben capturarlas internamente si es necesario).
 """
 from __future__ import annotations
 
-from qtrader.backtesting.events import BacktestEvent  # noqa: TCH001 — used in method signature
+from datetime import date  # noqa: TCH003 — usado en anotaciones runtime
+from decimal import Decimal  # noqa: TCH003 — usado en anotaciones runtime
+
+from qtrader.backtesting.events import (
+    BacktestEvent,
+    CycleEndEvent,
+    FillEvent,
+)
+from qtrader.core.types import Fill  # noqa: TCH001
 
 
 class AuditObserver:
@@ -17,13 +25,23 @@ class AuditObserver:
 
 
 class MetricsObserver:
-    """Calcula métricas de rendimiento en tiempo real (stub — T2.2 lo implementa).
+    """Acumula equity curve y fills del backtest para calcular metricas completas.
 
-    Acumula equity_curve para calcular Sharpe, max drawdown, etc.
+    Recoge CycleEndEvent (equity NAV por dia) y FillEvent (fills ejecutados).
+    La equity curve y los fills se pasan a compute_full_report() al finalizar.
     """
 
     def __init__(self) -> None:
-        self.events: list[BacktestEvent] = []
+        self.equity_curve: list[tuple[date, Decimal]] = []
+        self.fills: list[Fill] = []
 
     def on_event(self, event: BacktestEvent) -> None:
-        self.events.append(event)  # TODO T2.2: calcular métricas incremental
+        if isinstance(event, CycleEndEvent):
+            self.equity_curve.append((event.trading_day, event.equity))
+        elif isinstance(event, FillEvent):
+            self.fills.append(event.fill)
+
+    def reset(self) -> None:
+        """Limpia el estado acumulado (util en tests)."""
+        self.equity_curve.clear()
+        self.fills.clear()

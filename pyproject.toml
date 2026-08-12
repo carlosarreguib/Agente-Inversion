@@ -105,3 +105,9 @@ name = "research does not import agents or real brokers"
 type = "forbidden"
 source_modules = ["qtrader.research"]
 forbidden_modules = ["qtrader.agents", "qtrader.brokers"]
+
+[[tool.importlinter.contracts]]
+name = "strategies does not import brokers or agents"
+type = "forbidden"
+source_modules = ["qtrader.strategies"]
+forbidden_modules = ["qtrader.brokers", "qtrader.agents", "qtrader.execution"]

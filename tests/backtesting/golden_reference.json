@@ -1,9 +1,9 @@
 {
-  "total_return": "-0.6065",
-  "sharpe_ratio": "1.0763",
-  "max_drawdown": "-1.0434",
+  "total_return": "-0.0053",
+  "sharpe_ratio": "-0.0329",
+  "max_drawdown": "-0.0694",
   "num_trades": 153,
   "total_commission": "224.45",
   "total_slippage": "0.00",
-  "final_equity": "5902.42"
+  "final_equity": "14920.57"
 }

@@ -291,6 +291,320 @@ def _cmd_research_report(args: argparse.Namespace) -> None:
         print(f"Media SR OOS:                         {mean:.4f}")
 
 
+def _print_full_report(report: object, initial_equity: Decimal) -> None:
+    """Imprime el informe completo de metricas con bootstrap CIs."""
+    from qtrader.backtesting.full_metrics import BacktestReport
+    assert isinstance(report, BacktestReport)
+
+    def _pct(v: Decimal) -> str:
+        return f"{v * 100:.2f} %"
+
+    def _d(v: Decimal, prec: int = 4) -> str:
+        return f"{v:.{prec}f}"
+
+    def _ci(ci: object) -> str:
+        from qtrader.backtesting.full_metrics import BootstrapCI
+        if ci is None or not isinstance(ci, BootstrapCI):
+            return ""
+        return f"  [CI95: {ci.lower:.4f}, {ci.upper:.4f}]"
+
+    print("=" * 70)
+    print(f"  INFORME BACKTEST COMPLETO — {report.strategy_id}")
+    print(f"  {report.start_date} → {report.end_date}  ({report.n_trading_days} dias habiles)")
+    print("=" * 70)
+
+    print("\n--- RETORNO ---")
+    sign = "+" if report.total_return >= 0 else ""
+    print(f"  Retorno total:         {sign}{_pct(report.total_return)}")
+    print(f"  CAGR anualizado:       {sign}{_pct(report.cagr)}")
+    print(f"  Capital inicial:       {_fmt(initial_equity)}")
+    from qtrader.backtesting.full_metrics import _ZERO
+    final = initial_equity * (report.total_return + _ZERO.__class__("1"))
+    print(f"  Capital final (est.):  {_fmt(final)}")
+
+    print("\n--- RIESGO ---")
+    print(f"  Volatilidad anual:     {_pct(report.volatility)}")
+    print(f"  Max drawdown:          {_pct(report.max_drawdown)}")
+    print(f"  Max DD duracion:       {report.max_drawdown_duration_days} dias")
+    if report.max_drawdown_ci:
+        print(f"  Max DD CI95:           [{_pct(report.max_drawdown_ci.lower)}, "
+              f"{_pct(report.max_drawdown_ci.upper)}]")
+
+    print("\n--- RATIOS ---")
+    print(f"  Sharpe:                {_d(report.sharpe)}{_ci(report.sharpe_ci)}")
+    print(f"  Sortino:               {_d(report.sortino)}{_ci(report.sortino_ci)}")
+    print(f"  Calmar:                {_d(report.calmar)}{_ci(report.calmar_ci)}")
+
+    print("\n--- ACTIVIDAD ---")
+    print(f"  Nº trades (round-trip):{report.n_trades}")
+    print(f"  Win rate:              {_pct(report.win_rate)}")
+    print(f"  Profit factor:         {_d(report.profit_factor)}")
+    print(f"  Avg ganancia:          {_fmt(report.avg_win_eur)}")
+    print(f"  Avg perdida:           {_fmt(report.avg_loss_eur)}")
+    print(f"  Rotacion anual:        {_d(report.turnover_annual, 2)}x")
+
+    print("\n--- EXPOSICION ---")
+    print(f"  Exposicion media:      {_pct(report.avg_exposure)}")
+    print(f"  Exposicion maxima:     {_pct(report.max_exposure)}")
+
+    print("\n--- COSTES ---")
+    print(f"  Comisiones totales:    {_fmt(report.costs.total_commission)}")
+    print(f"  Costes totales:        {_fmt(report.costs.total_costs)}")
+
+    if report.by_instrument:
+        print("\n--- P&L POR INSTRUMENTO (top 10 por P&L abs) ---")
+        sorted_insts = sorted(
+            report.by_instrument,
+            key=lambda x: abs(x.pnl_eur),
+            reverse=True,
+        )
+        print(f"  {'SYMBOL':<14}  {'TRADES':>6}  {'P&L EUR':>10}  {'WIN%':>7}")
+        print(f"  {'-' * 14}  {'-' * 6}  {'-' * 10}  {'-' * 7}")
+        for inst in sorted_insts[:10]:
+            sign_i = "+" if inst.pnl_eur >= _ZERO.__class__("0") else ""
+            print(f"  {inst.symbol:<14}  {inst.n_trades:>6}  "
+                  f"{sign_i}{inst.pnl_eur:>10.2f}  {inst.win_rate * 100:>6.1f}%")
+
+    if report.annual_pnl:
+        print("\n--- RETORNO ANUAL ---")
+        print(f"  {'AÑO':<6}  {'P&L EUR':>10}  {'RETORNO':>8}")
+        print(f"  {'-' * 6}  {'-' * 10}  {'-' * 8}")
+        for p in report.annual_pnl:
+            sign_p = "+" if p.pnl_eur >= _ZERO.__class__("0") else ""
+            sign_r = "+" if p.return_pct >= _ZERO.__class__("0") else ""
+            print(f"  {p.period:<6}  {sign_p}{p.pnl_eur:>10.2f}  "
+                  f"{sign_r}{p.return_pct * 100:>7.2f}%")
+
+    if report.monthly_pnl:
+        print("\n--- RETORNO MENSUAL (primeros 12 meses) ---")
+        print(f"  {'MES':<8}  {'P&L EUR':>10}  {'RETORNO':>8}")
+        print(f"  {'-' * 8}  {'-' * 10}  {'-' * 8}")
+        for p in list(report.monthly_pnl)[:12]:
+            sign_p = "+" if p.pnl_eur >= _ZERO.__class__("0") else ""
+            sign_r = "+" if p.return_pct >= _ZERO.__class__("0") else ""
+            print(f"  {p.period:<8}  {sign_p}{p.pnl_eur:>10.2f}  "
+                  f"{sign_r}{p.return_pct * 100:>7.2f}%")
+
+    print("\n--- NOTA ---")
+    print("  Sharpe bruto (mostrado): incluye costes modelados.")
+    print("  Para Sharpe neto con haircut ver: uv run qtrader research report --strategy X")
+    print("=" * 70)
+
+
+def _cmd_backtest(args: argparse.Namespace) -> None:
+    """Ejecuta el backtest de una estrategia sobre datos sinteticos (T3.1/T3.2)."""
+    from datetime import UTC, datetime, timedelta
+    from decimal import Decimal
+
+    from qtrader.backtesting.engine import (
+        ApproveAllRisk,
+        BacktestEngine,
+        CostAwareSimBroker,
+    )
+    from qtrader.backtesting.events import BarEvent
+    from qtrader.backtesting.metrics import compute_metrics
+    from qtrader.backtesting.observers import MetricsObserver
+    from qtrader.backtesting.synthetic import SyntheticMultiProvider
+    from qtrader.costs import CostsConfig
+    from qtrader.data.universe import UniverseManager
+    from qtrader.strategies.momentum import (
+        CrossSectionalMomentumStrategy,
+        MomentumEqualWeightPortfolio,
+    )
+
+    if args.strategy != "momentum":
+        print(f"ERROR: estrategia desconocida '{args.strategy}'. Solo 'momentum' disponible.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    start_date = date.fromisoformat(args.start)
+    end_date = date.fromisoformat(args.end)
+    initial_equity = Decimal("15000")
+    config_dir = Path(__file__).resolve().parents[2] / "config"
+
+    # Generar lista de dias habiles en el rango
+    trading_days: list[date] = []
+    cur = start_date
+    while cur <= end_date:
+        if cur.weekday() < 5:
+            trading_days.append(cur)
+        cur += timedelta(days=1)
+
+    if len(trading_days) < 300:
+        print("ERROR: rango de fechas demasiado corto (minimo ~1 año + 252 dias de lookback).",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # Universo: todos los instrumentos declarados en el fichero.
+    # El motor consulta get_universe(T) point-in-time en cada dia del bucle.
+    # Para construir el proveedor de datos y el mapa de costes usamos all_instruments.
+    mgr = UniverseManager(config_dir=config_dir)
+    all_instruments = mgr.all_instruments
+    if not all_instruments:
+        print("ERROR: universo vacio (config/universe.yaml sin instrumentos).", file=sys.stderr)
+        sys.exit(1)
+
+    instrument_map = {inst.ticker_proxy: inst for inst in all_instruments}
+    instruments = all_instruments  # alias para los bucles de parametros
+
+    # Proveedor de datos: sinteticos con parametros calibrados para ETFs
+    # drift=0.07/252 anualizado, vol=0.15/sqrt(252) diario
+    daily_drift = 0.07 / 252
+    daily_vol = 0.15 / (252 ** 0.5)
+    # El proveedor debe empezar 2 años antes del inicio del backtest para que
+    # la estrategia tenga 252+ barras de historia desde el primer dia de trading.
+    from datetime import timedelta as _td
+    provider_start = start_date - _td(days=2 * 365)
+    start_dt = datetime(provider_start.year, provider_start.month, provider_start.day, tzinfo=UTC)
+
+    # Parametros de correlacion aplicados via seed derivada del sector/region
+    # (diferencia sistematica entre sectores y regiones en la seed)
+    symbol_params = {}
+    for inst in instruments:
+        # Volatilidad y drift ligeramente diferenciados por categoria para realismo
+        from qtrader.core.types import InstrumentCategory
+        if inst.category == InstrumentCategory.SECTOR:
+            sym_vol = daily_vol * 1.15
+            sym_drift = daily_drift * 0.95
+        elif inst.category == InstrumentCategory.FIXED_INCOME:
+            sym_vol = daily_vol * 0.35
+            sym_drift = daily_drift * 0.50
+        elif inst.category == InstrumentCategory.ALTERNATIVE:
+            sym_vol = daily_vol * 0.70
+            sym_drift = daily_drift * 0.80
+        else:
+            sym_vol = daily_vol
+            sym_drift = daily_drift
+        symbol_params[inst.ticker_proxy] = {
+            "drift": sym_drift,
+            "vol": sym_vol,
+            "base_price": 100.0,
+        }
+
+    provider = SyntheticMultiProvider(
+        base_seed=42,
+        start_date=start_dt,
+        symbol_params=symbol_params,
+    )
+
+    costs_config = CostsConfig.from_yaml(config_dir / "costs.yaml")
+
+    # Para backtest con datos sinteticos, todos los instrumentos se tratan como
+    # disponibles desde el inicio del rango (ignoramos declared_on de YAML).
+    # En un backtest con datos reales, get_universe usaria la fecha real.
+    class _UniverseManagerAdapter:
+        def get_universe(self, as_of: date) -> list[object]:  # noqa: ARG002
+            return all_instruments  # type: ignore[return-value]
+
+        def get_instrument(self, symbol: str, as_of: date) -> object | None:  # noqa: ARG002
+            return instrument_map.get(symbol)
+
+    strategy = CrossSectionalMomentumStrategy(trading_days=trading_days)
+    portfolio = MomentumEqualWeightPortfolio(
+        initial_equity=initial_equity,
+        min_order_eur=Decimal("1000"),
+    )
+    broker = CostAwareSimBroker(
+        costs_config=costs_config,
+        universe=instrument_map,  # type: ignore[arg-type]
+    )
+
+    class _BarObserver:
+        def on_event(self, event: object) -> None:
+            if isinstance(event, BarEvent):
+                for vb in event.bars:
+                    portfolio.update_close(vb.bar.symbol, vb.bar.close)
+
+    print(f"Ejecutando backtest momentum {args.start} → {args.end}")
+    print(f"Universo: {len(instruments)} instrumentos  |  Dias habiles: {len(trading_days)}")
+    print()
+
+    metrics_obs = MetricsObserver()
+
+    engine = BacktestEngine(
+        provider=provider,
+        universe_mgr=_UniverseManagerAdapter(),  # type: ignore[arg-type]
+        strategy=strategy,
+        portfolio=portfolio,
+        risk=ApproveAllRisk(),
+        broker=broker,
+        trading_days=trading_days,
+        initial_equity=initial_equity,
+        slippage_bps=Decimal("5"),
+        observers=[_BarObserver(), metrics_obs],
+    )
+    result = engine.run()
+    metrics = compute_metrics(result)
+
+    # Validacion de rango esperado (invariante CLAUDE.md §3.7 + spec T3.1)
+    sharpe = metrics.sharpe_ratio
+    max_dd = metrics.max_drawdown
+
+    _SHARPE_MAX_EXPECTED = Decimal("1.5")
+    _MDD_MIN_EXPECTED = Decimal("-0.10")  # al menos -10 % de drawdown esperado
+
+    aviso = False
+    if sharpe > _SHARPE_MAX_EXPECTED:
+        aviso = True
+        print("AVISO: Sharpe fuera del rango esperado para momentum clasico.")
+        print("       Posible look-ahead bias o error de implementacion.")
+        print("       Revisar antes de interpretar estos resultados.")
+        print()
+    if max_dd > _MDD_MIN_EXPECTED:  # MaxDD muy pequeño (cercano a 0)
+        aviso = True
+        print("AVISO: MaxDD fuera del rango esperado para momentum clasico.")
+        print("       Posible look-ahead bias o error de implementacion.")
+        print("       Revisar antes de interpretar estos resultados.")
+        print()
+
+    if aviso:
+        import logging
+        logging.warning(
+            "BACKTEST AVISO: Sharpe=%.4f MaxDD=%.4f fuera del rango esperado. "
+            "Posible look-ahead bias.",
+            float(sharpe), float(max_dd),
+        )
+
+    print("=== Resultados backtest momentum ===")
+    print(f"Capital inicial:    {_fmt(initial_equity)}")
+    print(f"Capital final:      {_fmt(metrics.final_equity)}")
+    sign = "+" if metrics.total_return >= Decimal("0") else ""
+    ret_pct = metrics.total_return * 100
+    print(f"Retorno total:      {sign}{metrics.total_return:.4f} ({sign}{ret_pct:.2f} %)")
+    print(f"Sharpe anualizado:  {sharpe:.4f}")
+    print(f"Max drawdown:       {max_dd:.4f} ({max_dd * 100:.2f} %)")
+    print(f"Numero de trades:   {metrics.num_trades}")
+    print(f"Comisiones totales: {_fmt(metrics.total_commission)}")
+    print(f"Dias de trading:    {result.trading_days}")
+    print()
+    print("Sharpe bruto (mostrado): incluye costes modelados (sin haircut adicional).")
+    print("Para Sharpe neto con haircut por survivorship bias ver research report.")
+    if sharpe < Decimal("0.3") or sharpe > Decimal("0.8"):
+        print()
+        print(f"Nota: Sharpe={sharpe:.4f} fuera del rango publicado 0.3-0.8 para momentum 12-1.")
+        print("      Con datos sinteticos esto es esperado — los resultados con datos reales")
+        print("      pueden diferir significativamente.")
+
+    # --- Informe completo (T3.2) ---
+    report_mode = getattr(args, "report", "summary")
+    if report_mode == "full":
+        from qtrader.backtesting.full_metrics import compute_full_report
+        print()
+        print("Calculando metricas completas con bootstrap (n=1000, block=21)...")
+        total_commission = metrics.total_commission
+        full_report = compute_full_report(
+            strategy_id="momentum",
+            equity_curve=metrics_obs.equity_curve,
+            fills=metrics_obs.fills,
+            initial_equity=initial_equity,
+            total_commission=total_commission,
+            bootstrap=True,
+            bootstrap_n_samples=1000,
+            bootstrap_block_size=21,
+        )
+        _print_full_report(full_report, initial_equity)
+
+
 def _cmd_audit_verify(args: argparse.Namespace) -> None:
     db_path = str(args.db)
     if not Path(db_path).exists():
@@ -401,6 +715,38 @@ def main() -> None:
     )
 
     # ------------------------------------------------------------------
+    # backtest
+    # ------------------------------------------------------------------
+    backtest_parser = subparsers.add_parser(
+        "backtest",
+        help="Ejecuta un backtest de una estrategia (solo datos sinteticos)",
+    )
+    backtest_parser.add_argument(
+        "--strategy",
+        required=True,
+        metavar="STRATEGY_ID",
+        help="Estrategia a ejecutar (e.g. 'momentum')",
+    )
+    backtest_parser.add_argument(
+        "--start",
+        required=True,
+        metavar="YYYY-MM-DD",
+        help="Fecha de inicio del backtest",
+    )
+    backtest_parser.add_argument(
+        "--end",
+        required=True,
+        metavar="YYYY-MM-DD",
+        help="Fecha de fin del backtest",
+    )
+    backtest_parser.add_argument(
+        "--report",
+        default="summary",
+        choices=["summary", "full"],
+        help="Nivel de informe: 'summary' (default) o 'full' (con bootstrap CIs y tablas)",
+    )
+
+    # ------------------------------------------------------------------
     # research
     # ------------------------------------------------------------------
     research_parser = subparsers.add_parser(
@@ -452,6 +798,8 @@ def main() -> None:
 
     if args.command == "demo":
         _cmd_demo(args)
+    elif args.command == "backtest":
+        _cmd_backtest(args)
     elif args.command == "audit":
         if args.audit_command == "verify":
             _cmd_audit_verify(args)

@@ -302,12 +302,23 @@ class BacktestEngine:
                             intended_fill_date=intended_date,
                         ))
 
-            equity_curve.append((T, equity))
-            self._emit(CycleEndEvent(trading_day=T, equity=equity))
+            # Mark-to-market: NAV = cash + valor de mercado de posiciones a cierres de T.
+            # El motor registra NAV en la equity curve para que las metricas sean correctas.
+            nav = equity
+            for sym, pos in positions.items():
+                vb_today = bar_map.get(sym)
+                if vb_today is not None:
+                    nav += pos.quantity * vb_today.bar.close
+                else:
+                    nav += pos.market_value  # ultimo valor conocido como fallback
 
+            equity_curve.append((T, nav))
+            self._emit(CycleEndEvent(trading_day=T, equity=nav))
+
+        final_nav = equity_curve[-1][1] if equity_curve else equity
         return BacktestResult(
             initial_equity=self._initial_equity,
-            final_equity=equity,
+            final_equity=final_nav,
             total_fills=len(all_fills),
             trading_days=len(self._trading_days),
             fills=tuple(all_fills),
