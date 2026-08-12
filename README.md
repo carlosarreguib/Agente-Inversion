@@ -1,4 +1,47 @@
-# qtrader
+<div align="center">
+
+<pre>
+ ██████╗     ████████╗██████╗  █████╗ ██████╗ ███████╗██████╗
+██╔═══██╗    ╚══██╔══╝██╔══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗
+██║   ██║       ██║   ██████╔╝███████║██║  ██║█████╗  ██████╔╝
+██║▄▄ ██║       ██║   ██╔══██╗██╔══██║██║  ██║██╔══╝  ██╔══██╗
+╚██████╔╝       ██║   ██║  ██║██║  ██║██████╔╝███████╗██║  ██║
+ ╚══▀▀═╝        ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═╝
+</pre>
+
+### Agente de inversión cuantitativa · **solo simulación**
+
+*Un sistema que pierde un 3 % con trazabilidad completa es un éxito.*<br/>
+*Uno que gana un 40 % con una orden duplicada sin explicar es un fracaso.*
+
+<br/>
+
+![Simulación](https://img.shields.io/badge/modo-SOLO%20SIMULACI%C3%93N-0b7285?style=for-the-badge&labelColor=1a1a1a)
+[![Fases](https://img.shields.io/badge/fases-0--6%20de%2012-2b8a3e?style=for-the-badge&labelColor=1a1a1a)](#estado-actual-fases-0-6-completadas)
+[![Tests](https://img.shields.io/badge/tests-573-2b8a3e?style=for-the-badge&labelColor=1a1a1a)](#verificación)
+
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![mypy](https://img.shields.io/badge/mypy-strict-2b8a3e)
+![ruff](https://img.shields.io/badge/ruff-passing-2b8a3e)
+![import-linter](https://img.shields.io/badge/import--linter-13%20contratos-2b8a3e)
+![Capital](https://img.shields.io/badge/capital-15.000%20%E2%82%AC%20simulados-5c5f66)
+![Datos](https://img.shields.io/badge/presupuesto%20datos-0%20%E2%82%AC-5c5f66)
+
+<table>
+<tr>
+<td align="center" width="25%"><strong>3</strong><br/><sub>capas de defensa<br/>independientes</sub></td>
+<td align="center" width="25%"><strong>0</strong><br/><sub>rutas de código<br/>a un broker real</sub></td>
+<td align="center" width="25%"><strong>16 ms</strong><br/><sub>ventana TOCTOU<br/>(presupuesto: 100)</sub></td>
+<td align="center" width="25%"><strong>SHA-256</strong><br/><sub>auditoría con<br/>hash encadenado</sub></td>
+</tr>
+</table>
+
+</div>
+
+---
+
+> [!WARNING]
+> **Ningún componente de IA puede enviar órdenes.** Un LLM puede como máximo llamar a `propose_order`; `submit_order` no existe en el toolset de ningún agente. La decisión y el envío son deterministas. El paso a dinero real exige una decisión humana firmada y registrada — no un flag.
 
 Plataforma experimental de gestión cuantitativa de cartera. **Opera exclusivamente en simulación.** No existe ninguna ruta de código que envíe una orden a un broker real, y activarla requerirá una decisión humana firmada y registrada.
 
@@ -7,7 +50,7 @@ Plataforma experimental de gestión cuantitativa de cartera. **Opera exclusivame
 - **Presupuesto de datos:** 0 €. Fuentes gratuitas con cross-validación entre dos proveedores.
 - **Universo ETF-céntrico** (~50 instrumentos), congelado y versionado con fecha de declaración.
 
-El objetivo primario es la **corrección operativa, no la rentabilidad**. Un sistema que pierde un 3 % con reconciliación perfecta y trazabilidad completa es un éxito; uno que gana un 40 % con una orden duplicada sin explicar es un fracaso.
+El objetivo primario es la **corrección operativa, no la rentabilidad**: de ahí el lema de la cabecera. Un resultado sospechosamente bueno se trata como un bug hasta demostrar lo contrario.
 
 > **El backtest genera hipótesis; no valida.** La validación es walk-forward más paper trading sobre datos nunca vistos. Este framing es deliberado y no se suaviza en ningún informe. El benchmark honesto es un ETF indexado global después de costes e impuestos, y lo más probable es no superarlo.
 
