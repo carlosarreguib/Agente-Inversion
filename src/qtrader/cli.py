@@ -5,6 +5,7 @@ import sys
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 
 def _fmt(amount: Decimal) -> str:
@@ -193,6 +194,179 @@ def _cmd_golden_update(args: argparse.Namespace) -> None:  # noqa: ARG001
         encoding="utf-8",
     )
     print(f"Actualizado: {golden_json}")
+
+
+def _cmd_research_run(args: argparse.Namespace) -> None:
+    """Lanza el LLMResearcher con una hipótesis explícita (T8)."""
+    import logging
+    from pathlib import Path
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
+    api_key = args.api_key or __import__("os").environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        print(
+            "ERROR: se requiere ANTHROPIC_API_KEY (env var o --api-key).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    from qtrader.research.llm.proposals_db import ProposalsDB
+    from qtrader.research.llm.researcher import (
+        BacktestRunResult,
+        BudgetConfig,
+        LLMResearcher,
+    )
+    from qtrader.research.llm.toolset import load_toolset
+
+    class _AnthropicClient:
+        def __init__(self, key: str) -> None:
+            self._key = key
+
+        def create_message(
+            self,
+            *,
+            model: str,
+            max_tokens: int,
+            system: str,
+            messages: list[dict[str, Any]],
+            tools: list[dict[str, Any]],
+        ) -> dict[str, Any]:
+            import json as _json
+            import urllib.request
+
+            payload: dict[str, Any] = {
+                "model": model,
+                "max_tokens": max_tokens,
+                "system": system,
+                "messages": messages,
+                "tools": tools,
+            }
+            data = _json.dumps(payload).encode()
+            req = urllib.request.Request(
+                "https://api.anthropic.com/v1/messages",
+                data=data,
+                headers={
+                    "x-api-key": self._key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
+                result: dict[str, Any] = _json.loads(resp.read())
+                return result
+
+    class _StubBacktestRunner:
+        """Stub que ejecuta un backtest mínimo con datos sintéticos."""
+
+        def run(
+            self,
+            strategy_id: str,
+            parameters: dict[str, float | int | str],
+        ) -> BacktestRunResult:
+            return BacktestRunResult(
+                sharpe_oos=0.0,
+                max_drawdown=0.0,
+                dsr=0.0,
+                n_trials=0,
+            )
+
+    trials_db_path = Path(args.trials_db)
+    proposals_db_path = Path(args.proposals_db)
+    toolset = load_toolset(trials_db_path)
+    proposals_db = ProposalsDB(proposals_db_path)
+    budget = BudgetConfig(
+        max_tokens_per_run=args.max_tokens,
+        max_runs_per_day=args.max_runs_per_day,
+    )
+    researcher = LLMResearcher(
+        toolset=toolset,
+        llm_client=_AnthropicClient(api_key),
+        proposals_db=proposals_db,
+        backtest_runner=_StubBacktestRunner(),
+        budget=budget,
+        model=args.model,
+    )
+    result = researcher.run(args.hypothesis)
+    print(f"hypothesis_id:    {result.hypothesis_id}")
+    print(f"proposal_created: {result.proposal_created}")
+    if result.proposal_id:
+        print(f"proposal_id:      {result.proposal_id}")
+    if result.rejection_reason:
+        print(f"rechazado:        {result.rejection_reason}")
+    print(f"tokens_usados:    {result.tokens_used}")
+    print(f"runs_hoy:         {result.runs_today}")
+
+
+def _cmd_research_approve(args: argparse.Namespace) -> None:
+    """Aprueba una propuesta de investigación con confirmación interactiva (T8)."""
+    from pathlib import Path
+
+    from qtrader.research.llm.proposals_db import ProposalsDB
+
+    db = ProposalsDB(Path(args.proposals_db))
+    proposal = db.get(args.proposal_id)
+    if proposal is None:
+        print(f"ERROR: propuesta {args.proposal_id!r} no encontrada.", file=sys.stderr)
+        sys.exit(1)
+
+    if proposal.status != "PENDING_APPROVAL":
+        print(
+            f"ERROR: propuesta {args.proposal_id!r} no está en PENDING_APPROVAL "
+            f"(está en {proposal.status!r}).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print(f"\n=== Propuesta {proposal.proposal_id} ===")
+    print(f"Estrategia:  {proposal.strategy_id}")
+    print(f"Sharpe OOS:  {proposal.sharpe_oos:.4f}")
+    print(f"MaxDD:       {proposal.maxdd:.4f}")
+    print(f"DSR:         {proposal.dsr:.4f}")
+    print(f"N trials:    {proposal.n_trials}")
+    print(f"\nResumen:\n{proposal.summary}")
+    print()
+    print("ATENCIÓN: Aprobar esta propuesta la marca como APPROVED en proposals.db.")
+    print("La activación real en producción requiere pasos adicionales manuales.")
+    print()
+
+    respuesta = "s" if args.yes else input("¿Aprobar propuesta? [s/N] ").strip().lower()
+
+    if respuesta != "s":
+        print("Cancelado. Propuesta no modificada.")
+        sys.exit(0)
+
+    reviewed_by = args.reviewed_by or __import__("os").environ.get("USER", "unknown")
+    updated = db.approve(args.proposal_id, reviewed_by=reviewed_by)
+    if updated:
+        print(f"Propuesta {args.proposal_id} marcada como APPROVED por {reviewed_by!r}.")
+        print("Siguiente paso: implementar la estrategia manualmente y crear un ADR.")
+    else:
+        print("ERROR: no se pudo actualizar la propuesta.", file=sys.stderr)
+        sys.exit(1)
+
+
+def _cmd_research_proposals(args: argparse.Namespace) -> None:
+    """Lista propuestas de investigación (T8)."""
+    from pathlib import Path
+
+    from qtrader.research.llm.proposals_db import ProposalsDB
+
+    db = ProposalsDB(Path(args.proposals_db))
+    records = db.fetch_pending() if args.status == "pending" else db.fetch_all()
+
+    if not records:
+        print("Sin propuestas.")
+        return
+
+    print(f"{'ID':<38}  {'ESTRATEGIA':<14}  {'DSR':>6}  {'SR_OOS':>7}  {'MaxDD':>7}  ESTADO")
+    print("-" * 100)
+    for p in records:
+        print(
+            f"{p.proposal_id:<38}  {p.strategy_id:<14}  "
+            f"{p.dsr:>6.4f}  {p.sharpe_oos:>7.4f}  {p.maxdd:>7.4f}  {p.status}"
+        )
 
 
 def _cmd_research_trials_count(args: argparse.Namespace) -> None:
@@ -968,6 +1142,100 @@ def main() -> None:
         help="Ruta a trials.db (default: data/trials.db)",
     )
 
+    # research run — LLMResearcher (T8)
+    run_llm_parser = research_subs.add_parser(
+        "run",
+        help="Lanza el LLMResearcher con una hipótesis explícita (T8)",
+    )
+    run_llm_parser.add_argument(
+        "--hypothesis",
+        required=True,
+        metavar="TEXTO",
+        help="Hipótesis a investigar",
+    )
+    run_llm_parser.add_argument(
+        "--trials-db",
+        default="data/trials.db",
+        metavar="PATH",
+        help="Ruta a trials.db (default: data/trials.db)",
+    )
+    run_llm_parser.add_argument(
+        "--proposals-db",
+        default="data/proposals.db",
+        metavar="PATH",
+        help="Ruta a proposals.db (default: data/proposals.db)",
+    )
+    run_llm_parser.add_argument(
+        "--model",
+        default="claude-sonnet-4-6",
+        help="Modelo LLM (default: claude-sonnet-4-6)",
+    )
+    run_llm_parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=2000,
+        help="Máximo de tokens por run (default: 2000)",
+    )
+    run_llm_parser.add_argument(
+        "--max-runs-per-day",
+        type=int,
+        default=10,
+        help="Máximo de runs por día (default: 10)",
+    )
+    run_llm_parser.add_argument(
+        "--api-key",
+        default=None,
+        metavar="KEY",
+        help="API key de Anthropic (default: ANTHROPIC_API_KEY env var)",
+    )
+
+    # research approve — aprobación humana de propuesta (T8)
+    approve_parser = research_subs.add_parser(
+        "approve",
+        help="Aprueba una propuesta de investigación con confirmación interactiva",
+    )
+    approve_parser.add_argument(
+        "--proposal-id",
+        required=True,
+        metavar="UUID",
+        help="ID de la propuesta a aprobar",
+    )
+    approve_parser.add_argument(
+        "--proposals-db",
+        default="data/proposals.db",
+        metavar="PATH",
+        help="Ruta a proposals.db (default: data/proposals.db)",
+    )
+    approve_parser.add_argument(
+        "--reviewed-by",
+        default=None,
+        metavar="NOMBRE",
+        help="Nombre del revisor (default: $USER)",
+    )
+    approve_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirmar sin prompt interactivo (para scripts)",
+    )
+
+    # research proposals — lista propuestas (T8)
+    proposals_list_parser = research_subs.add_parser(
+        "proposals",
+        help="Lista propuestas de investigación",
+    )
+    proposals_list_parser.add_argument(
+        "--proposals-db",
+        default="data/proposals.db",
+        metavar="PATH",
+        help="Ruta a proposals.db (default: data/proposals.db)",
+    )
+    proposals_list_parser.add_argument(
+        "--status",
+        default="pending",
+        choices=["pending", "all"],
+        help="Filtro de estado (default: pending)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "dashboard":
@@ -1005,6 +1273,12 @@ def main() -> None:
                 sys.exit(1)
         elif args.research_command == "report":
             _cmd_research_report(args)
+        elif args.research_command == "run":
+            _cmd_research_run(args)
+        elif args.research_command == "approve":
+            _cmd_research_approve(args)
+        elif args.research_command == "proposals":
+            _cmd_research_proposals(args)
         else:
             research_parser.print_help()
             sys.exit(1)

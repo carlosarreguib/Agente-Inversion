@@ -168,3 +168,16 @@ name = "dashboard does not import agents brokers or execution"
 type = "forbidden"
 source_modules = ["qtrader.dashboard"]
 forbidden_modules = ["qtrader.agents", "qtrader.brokers", "qtrader.execution"]
+
+# T8: el módulo research.llm NO puede importar brokers, execution, safety ni agents.
+# El LLM solo puede proponer — nunca enviar órdenes ni tocar producción.
+[[tool.importlinter.contracts]]
+name = "research.llm does not import brokers execution safety or agents"
+type = "forbidden"
+source_modules = ["qtrader.research.llm"]
+forbidden_modules = [
+    "qtrader.brokers",
+    "qtrader.execution",
+    "qtrader.safety",
+    "qtrader.agents",
+]
