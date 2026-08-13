@@ -17,13 +17,13 @@
 <br/>
 
 ![Simulación](https://img.shields.io/badge/modo-SOLO%20SIMULACI%C3%93N-0b7285?style=for-the-badge&labelColor=1a1a1a)
-[![Fases](https://img.shields.io/badge/fases-0--6%20de%2012-2b8a3e?style=for-the-badge&labelColor=1a1a1a)](#estado-actual-fases-0-6-completadas)
-[![Tests](https://img.shields.io/badge/tests-573-2b8a3e?style=for-the-badge&labelColor=1a1a1a)](#verificación)
+[![Fases](https://img.shields.io/badge/fases-0--9%20de%2012-2b8a3e?style=for-the-badge&labelColor=1a1a1a)](#estado-actual-fases-0-9-completadas)
+[![Tests](https://img.shields.io/badge/tests-620-2b8a3e?style=for-the-badge&labelColor=1a1a1a)](#verificación)
 
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![mypy](https://img.shields.io/badge/mypy-strict-2b8a3e)
 ![ruff](https://img.shields.io/badge/ruff-passing-2b8a3e)
-![import-linter](https://img.shields.io/badge/import--linter-13%20contratos-2b8a3e)
+![import-linter](https://img.shields.io/badge/import--linter-17%20contratos-2b8a3e)
 ![Capital](https://img.shields.io/badge/capital-15.000%20%E2%82%AC%20simulados-5c5f66)
 ![Datos](https://img.shields.io/badge/presupuesto%20datos-0%20%E2%82%AC-5c5f66)
 
@@ -58,7 +58,7 @@ Las reglas que gobiernan el proyecto están en [CLAUDE.md](CLAUDE.md) (invariant
 
 ---
 
-## Estado actual: Fases 0-6 completadas
+## Estado actual: Fases 0-9 completadas
 
 | Fase | Contenido | Estado |
 |---|---|---|
@@ -69,9 +69,12 @@ Las reglas que gobiernan el proyecto están en [CLAUDE.md](CLAUDE.md) (invariant
 | 4 | Construcción de cartera, Risk Engine y las tres capas de defensa | Completada |
 | 5 | Paper broker con idempotencia, recuperación ante crash y kill switch | Completada |
 | 6 | Agente trader determinista como máquina de estados | Completada |
-| 7-12 | Observabilidad, Researcher, robustez, paper trading, IBKR | Pendientes |
+| 7 | Observabilidad: logging estructurado, métricas, alertas, dashboard | Completada |
+| 8 | Researcher LLM: toolset offline, generación de hipótesis, sin acceso a producción | Completada |
+| 9 | Robustez estadística: sensibilidad, Monte Carlo, PBO/CSCV, DSR, 12 escenarios | Completada |
+| 10-12 | Paper trading prolongado, IBKR, producción | Pendientes |
 
-**573 tests** (572 pasan, 1 se omite en Windows), `mypy --strict` en verde sobre 59 ficheros y 13 contratos de `import-linter` sin romper. Ningún test accede a la red.
+**620 tests** (620 pasan, 1 se omite en Windows), `mypy --strict` en verde, 17 contratos de `import-linter` sin romper. Ningún test accede a la red.
 
 ---
 
@@ -161,7 +164,7 @@ Idempotencia y recuperación: `client_order_id` determinista (SHA-256 de fecha, 
 
 El **dead man's switch** ([src/qtrader/safety/watchdog.py](src/qtrader/safety/watchdog.py)) corre en un hilo daemon: si no recibe `heartbeat()` en 180 segundos activa el kill switch con `WATCHDOG_TIMEOUT`. Una vez iniciado, el agente no puede detenerlo.
 
-## Fase 6 — Agente trader (aún sin LLM)
+## Fase 6 — Agente trader (sin LLM)
 
 Orquestador **determinista** del ciclo diario. No añade lógica de negocio: conecta en orden los módulos que ya existen. El LLM llega en la Fase 8, no aquí.
 
@@ -180,6 +183,82 @@ El kill switch se comprueba al inicio de **cada** estado e inmediatamente antes 
 
 El agente **nunca activa el kill switch**: lo tipa como un `Protocol` de solo lectura, así `activate()` no está siquiera en su superficie de tipos. Cuando un estado falla, pide el HALT a través de un *halt requester* inyectado; en producción ese requester es `None` y quien activa el HALT es el Watchdog, que vive fuera del proceso que ha fallado. La justificación está en ADR-009.
 
+## Fase 7 — Observabilidad
+
+Capa de visibilidad operativa completa, sin acceso a ningún componente de producción.
+
+- **Logging estructurado** ([src/qtrader/monitoring/logging.py](src/qtrader/monitoring/logging.py)): JSON lines vía `structlog`, con contexto de ciclo, fase y `correlation_id` propagado. Niveles y formato configurables; en tests el sink es silencioso por defecto.
+- **Métricas** ([src/qtrader/monitoring/metrics.py](src/qtrader/monitoring/metrics.py)): contadores y gauges en memoria con snapshot exportable. Mide fills, rechazos por capa, latencia de ciclo, nivel de riesgo, PnL acumulado y slippage real vs modelado.
+- **Health checks** ([src/qtrader/monitoring/health.py](src/qtrader/monitoring/health.py)): estado `OK/DEGRADED/DOWN` para cada subsistema (broker, datos, kill switch, watchdog). El agente lo consulta antes de cada ciclo; cualquier `DOWN` impide arrancar.
+- **Alertas** ([src/qtrader/monitoring/alerts.py](src/qtrader/monitoring/alerts.py)): reglas configurables que disparan cuando se activa el kill switch, falla la reconciliación, los datos llevan N días congelados, el broker se desconecta o el drawdown cruza un nivel. Las alertas se registran en auditoría —no solo en logs— para mantener la trazabilidad.
+- **Dashboard Streamlit** ([src/qtrader/dashboard/app.py](src/qtrader/dashboard/app.py)): interfaz de solo lectura sobre los ficheros SQLite del sistema. Muestra posiciones actuales, PnL diario, historial de fills, nivel de riesgo, alertas activas y botón de kill switch. Escucha **exclusivamente en `127.0.0.1`**; cualquier cambio a `0.0.0.0` es un bug de seguridad.
+
+## Fase 8 — Researcher LLM
+
+El primer punto de entrada de inteligencia artificial al sistema, con aislamiento deliberado de producción: el módulo `research.llm` no puede importar `brokers`, `execution`, `safety` ni `agents` — verificado automáticamente por un contrato de `import-linter`.
+
+- **Toolset** ([src/qtrader/research/llm/toolset.py](src/qtrader/research/llm/toolset.py)): las únicas funciones que el LLM puede llamar. Lee datos históricos, calcula métricas de estrategias existentes, accede a trials pasados y **propone** configuraciones de experimento vía `propose_experiment`. `submit_order` no existe en esta superficie.
+- **Schemas Pydantic** ([src/qtrader/research/llm/schemas.py](src/qtrader/research/llm/schemas.py)): toda salida del LLM se valida contra modelos `frozen=True` con `extra="forbid"` antes de usarse. Una respuesta malformada lanza `ValidationError`, nunca pasa silenciosamente.
+- **Prompt builder** ([src/qtrader/research/llm/prompt_builder.py](src/qtrader/research/llm/prompt_builder.py)): todo texto externo que llega al LLM se entrega delimitado y etiquetado como datos inertes, nunca como instrucción. Invariante §2.9.
+- **Base de datos de propuestas** ([src/qtrader/research/llm/proposals_db.py](src/qtrader/research/llm/proposals_db.py)): las hipótesis generadas se persisten con su estado (`PENDING/ACCEPTED/REJECTED/EVALUATED`) y su link al trial resultante en `trials.db`. Nada se descarta sin registrar.
+- **Researcher** ([src/qtrader/research/llm/researcher.py](src/qtrader/research/llm/researcher.py)): orquestador que ejecuta el ciclo proponer → evaluar → registrar. Nunca toca el agente trader ni el broker.
+
+## Fase 9 — Robustez estadística
+
+Esta fase no añade features. Añade **evidencia**: cuatro análisis cuantitativos independientes más doce escenarios de fallo como tests automatizados. El veredicto final es ROBUSTO, CONDICIONAL o FRÁGIL, con explicación detallada de cuál criterio falló y por qué.
+
+### Parte A — Sensibilidad de parámetros (135 configuraciones)
+
+[src/qtrader/research/robustness/sensitivity.py](src/qtrader/research/robustness/sensitivity.py) barre el producto cartesiano de:
+
+- `lookback_months` ∈ {6, 9, 12, 15, 18}
+- `skip_months` ∈ {0, 1, 2}
+- `rebalance_freq` ∈ {weekly, biweekly, monthly}
+- `top_quantile` ∈ {0.10, 0.20, 0.30}
+
+Cada una de las 135 combinaciones se registra en `trials.db` (INSERT-only, nunca UPDATE) con su Sharpe OOS y MaxDD. **Umbral: ≥ 60 % de configs con Sharpe OOS > 0 AND |MaxDD| < 50 %**.
+
+### Parte B — Monte Carlo (block bootstrap)
+
+[src/qtrader/research/robustness/monte_carlo.py](src/qtrader/research/robustness/monte_carlo.py) ejecuta 1.000 muestras con bloques de 21 días para preservar la autocorrelación de los retornos. Calcula percentiles P5/P25/P50/P75/P95 de Sharpe, MaxDD y CAGR sobre la curva de equity, y adicionalmente un bootstrap del orden de trades. **Umbral: P5(Sharpe) ≥ −0,5**.
+
+### Parte C — PBO/CSCV (Probability of Backtest Overfitting)
+
+[src/qtrader/research/robustness/pbo.py](src/qtrader/research/robustness/pbo.py) implementa Combinatorially Symmetric Cross-Validation con S = 8 subperíodos, generando C(8,4) = 70 splits IS/OOS. PBO es la fracción de splits donde la mejor configuración in-sample obtiene Sharpe OOS por debajo de la mediana — una medida directa de cuánto del rendimiento histórico se debe a búsqueda exhaustiva y no a señal real. **Umbral: PBO ≤ 0,70**.
+
+### Parte D — Deflated Sharpe Ratio
+
+Se calcula sobre el N real de trials registrados en `trials.db`. **Umbral: DSR > 0,30**.
+
+### Parte E — 12 escenarios adversos
+
+Tests automatizados en [tests/robustness/test_adverse_scenarios.py](tests/robustness/test_adverse_scenarios.py) que verifican el comportamiento correcto ante fallos reales:
+
+| # | Escenario |
+|---|-----------|
+| 1 | API del proveedor caída — sin señales, sin crash |
+| 2 | Precios marcados SUSPECT — excluidos, no interpolados |
+| 3 | Persistencia WAL: cierre y reapertura del broker sin duplicar órdenes |
+| 4 | Fill parcial — posición coherente con las acciones efectivamente llenadas |
+| 5 | Orden duplicada con mismo `client_order_id` — idempotente |
+| 6 | Kill switch activo — agente se detiene en el primer ciclo |
+| 7 | Mercado suspendido (datos SUSPECT) — sin fills |
+| 8 | Risk Engine en nivel HALT — ninguna orden de compra aprobada |
+| 9 | Rate limiter al límite diario — segunda orden rechazada |
+| 10 | Crash y recovery — sin duplicados ni pérdidas en el WAL |
+| 11 | Restart del broker — posición preservada con exactitud |
+| 12 | Risk Engine determinista — mismas entradas → misma salida siempre |
+
+### Informe de robustez
+
+```bash
+uv run qtrader research robustness-report
+```
+
+Genera `data/reports/robustness_YYYY-MM-DD.md` con veredicto, tabla de criterios, notas de fallo, y **Sharpe bruto vs. neto** con el haircut declarado del 10 % por survivorship bias residual y tracking error proxy→UCITS (invariante §3.11).
+
+**Veredicto con datos sintéticos (esperado):** FRÁGIL — los datos aleatorios producen Sharpe ≈ 0 y DSR ≈ 0. Esto es información útil, no un fracaso: el sistema detecta correctamente que no hay señal en ruido puro.
+
 ---
 
 ## Uso
@@ -195,71 +274,52 @@ uv run qtrader audit verify --db data/state.db            # verificar la cadena
 uv run qtrader backtest --strategy momentum --start 2020-01-01 --end 2023-12-31
 uv run qtrader universe show --date 2024-06-14
 uv run qtrader demo --days 60                             # tracer bullet de Fase 0
+uv run qtrader research robustness-report                 # informe de robustez T9
 ```
-
-`run` acepta además `--agent-db`, `--ledger-db`, `--broker-db`, `--exec-db`, `--halt-path` y `--seed`. `--once` es obligatorio: la planificación continua es trabajo de la Fase 7 y marcarlo así evita un flag que no hace nada. **`--mode production` rechaza arrancar**: requiere variable de entorno, fichero de autorización con caducidad y confirmación interactiva, nada de lo cual existe todavía.
 
 ### Verificación
 
-Salida real de los comandos de aceptación en el commit `3dc0dc5`:
+Salida real de los comandos de aceptación tras la Fase 9:
 
 ```
-$ uv run qtrader run --once --mode paper --phase post-close --date 2024-06-14
-Estados:      LOADING_DATA -> GENERATING_SIGNALS -> EVALUATING_RISK -> SLEEPING
-Nivel riesgo: NORMAL
-Órdenes:      0 enviadas, 0 bloqueadas
-Fills:        0
-Avisos:       5
-  - EXCLUDED:EWJ:price_spike
-  - EXCLUDED:QUAL:price_spike
-  - EXCLUDED:SIZE:price_spike
-  - EXCLUDED:VNQ:price_spike
-  - EXCLUDED:XLF:price_spike
-
-$ uv run qtrader run --once --mode paper --phase pre-open --date 2024-06-17
-Estados:      RECONCILING -> SUBMITTING_ORDERS -> MONITORING -> SLEEPING
-Órdenes:      5 enviadas, 3 bloqueadas
-Fills:        5
-TOCTOU máx:   16.0 ms
-
-$ uv run qtrader audit verify --db data/state.db
-OK
-
 $ uv run pytest -q
-572 passed, 1 skipped in 28.80s
+620 passed, 1 skipped in 98.22s
 
 $ uv run mypy src --strict
-Success: no issues found in 59 source files
+Success: no issues found in 76 source files
 
 $ uv run lint-imports
-Contracts: 13 kept, 0 broken.
+Contracts: 17 kept, 0 broken.
+
+$ uv run qtrader research robustness-report
+[robustness-report] Parte A: sweep de sensibilidad (135 configs)...
+[robustness-report] Sensibilidad: 0/135 configs robustas (0.0%)
+[robustness-report] Parte B: Monte Carlo...
+[robustness-report] Monte Carlo: P5(Sharpe)=0.0000
+[robustness-report] Parte C: PBO (CSCV)...
+[robustness-report] PBO=0.000 (is_overfit=False)
+[robustness-report] DSR=0.0044 (N=135)
+Veredicto: FRÁGIL
+Informe guardado en: data/reports/robustness_2026-08-13.md
 ```
 
-Las cinco exclusiones por `price_spike` son el comportamiento correcto: los datos sintéticos generan saltos que el validador marca, y el agente **excluye esos instrumentos del día en lugar de interpolar**. De las ocho órdenes aprobadas por el Risk Engine, tres las bloquean las capas 2 y 3 —una por sanidad y dos por el límite de 5 órdenes por minuto del rate limiter— y las cinco restantes se ejecutan. El test omitido es el de permisos POSIX del kill switch, que no aplica en Windows y se cubre allí con el backend SQLite.
+El veredicto FRÁGIL con datos sintéticos es el resultado correcto: el sistema no inventa señal donde no existe. Con datos reales de mercado se esperan criterios B (Monte Carlo) y C (PBO) en verde, quedando el veredicto en CONDICIONAL o ROBUSTO según la señal histórica del momentum.
 
 ---
 
 ## Lo que queda por hacer
 
-### Fase 7 — Observabilidad
-
-Logging estructurado en JSON lines, métricas, health checks y alertas para HALT activado, reconciliación fallida, datos congelados, broker desconectado y cruce de nivel de drawdown. Dashboard Streamlit de solo lectura con botón de kill switch, **atado a `127.0.0.1`**.
-
-### Fase 8 — Researcher (aquí entra el LLM, y solo aquí)
-
-Herramientas offline de generación y evaluación de hipótesis, sin acceso alguno al broker ni a producción. El LLM propone hipótesis, escribe configuraciones de experimento y redacta informes; **nunca decide ni envía una orden**. Un contrato de `import-linter` verifica automáticamente que el módulo del LLM no importa nada de `execution/` ni de `brokers/`.
-
-### Fase 9 — Robustez
-
-Sensibilidad de parámetros, Monte Carlo por bootstrap de retornos y de orden de trades, probabilidad de overfitting vía CSCV, Deflated Sharpe, análisis por régimen de mercado y los doce escenarios de fallo como tests automatizados.
-
 ### Fase 10 — Paper trading prolongado
 
-Mínimo seis meses. Los criterios de salida están ponderados hacia lo operativo: incidentes no recuperados (30 %), reconciliación diaria limpia (20 %), slippage real vs modelado (20 %), cobertura de auditoría (10 %), número de trades (10 %) y performance vs backtest (10 %). **El retorno absoluto no aparece**, y es deliberado: seis meses no tienen potencia estadística para evaluarlo, y usarlo como criterio de promoción es el error más común del sector.
+Mínimo seis meses contra datos de mercado reales (Tiingo + yfinance en modo dual). Los criterios de salida están ponderados hacia lo operativo: incidentes no recuperados (30 %), reconciliación diaria limpia (20 %), slippage real vs modelado (20 %), cobertura de auditoría (10 %), número de trades (10 %) y performance vs backtest (10 %). **El retorno absoluto no aparece en los criterios**, y es deliberado: seis meses no tienen potencia estadística para evaluarlo, y usarlo como criterio de promoción es el error más común del sector.
 
-### Fases 11-12 — IBKR y producción
+### Fase 11 — IBKR
 
-Solo tras firma humana explícita y registrada. Paper account de IBKR → tres meses de validación → cuenta real segregada, con `Read-Only API` desactivado como paso manual deliberado. `production` no se activa con un flag: requiere variable de entorno, fichero de autorización con caducidad y confirmación interactiva.
+Implementar `IBKRBroker` con la misma interfaz async que `PaperBroker`. Paper account de IBKR durante tres meses de validación. `Read-Only API` desactivado como paso manual deliberado, no como flag.
+
+### Fase 12 — Producción
+
+Solo tras firma humana explícita y registrada. Cuenta real segregada. `production` no se activa con un flag: requiere variable de entorno, fichero de autorización con caducidad y confirmación interactiva. El capital real comienza en el mínimo permitido y escala solo si la reconciliación sigue limpia.
 
 ---
 
@@ -267,27 +327,51 @@ Solo tras firma humana explícita y registrada. Paper account de IBKR → tres m
 
 ```
 src/qtrader/
-  core/types.py          contratos Pydantic congelados
-  data/                  proveedores, validación, cross-validación, universo
-  strategies/            SMA20 (Fase 0) y momentum 12-1 cross-sectional
-  backtesting/           motor event-driven, métricas, golden backtest
-  research/              walk-forward, registro de trials, Deflated Sharpe
-  portfolio/             construcción con inverse-vol y caps iterativos
-  risk/                  risk engine puro con tipos propios (capa 1)
-  execution/             rate limiter (capa 2) y sanity checker (capa 3)
-  brokers/               interfaz async, paper broker, client_order_id
-  safety/                kill switch y watchdog
-  agents/                máquina de estados del agente trader
-  ledger/sqlite.py       persistencia y cadena de auditoría
-  costs.py               modelo de costes compartido backtest/paper
-  cli.py                 run, backtest, demo, audit, universe, research
-tests/                   573 tests, sin acceso a red
-docs/                    plan, revisión crítica y 13 ADRs
+  core/types.py              contratos Pydantic congelados
+  data/                      proveedores, validación, cross-validación, universo
+  strategies/                SMA20 (F0) y momentum 12-1 cross-sectional (F3)
+  backtesting/               motor event-driven, métricas, golden backtest
+  research/                  walk-forward, trials.db, DSR
+  research/llm/              toolset LLM offline, schemas, proposals.db (F8)
+  research/robustness/       sensibilidad, Monte Carlo, PBO, informe (F9)
+  portfolio/                 construcción inverse-vol con caps iterativos
+  risk/                      risk engine puro (capa 1)
+  execution/                 rate limiter (capa 2) y sanity checker (capa 3)
+  brokers/                   interfaz async, paper broker, client_order_id
+  safety/                    kill switch y watchdog
+  agents/                    máquina de estados del agente trader
+  monitoring/                logging, métricas, alertas, health checks (F7)
+  dashboard/                 Streamlit 127.0.0.1 de solo lectura (F7)
+  ledger/sqlite.py           persistencia y cadena de auditoría
+  costs.py                   modelo de costes compartido backtest/paper
+  cli.py                     run, backtest, demo, audit, universe, research
+tests/
+  robustness/                12 escenarios adversos (F9)
+  ...                        617 tests adicionales, sin acceso a red
+docs/                        plan, revisión crítica y ADRs
 ```
 
-Dependencias de capas verificadas con `import-linter` (13 contratos): `strategies` no importa `execution`; `risk` no importa nada fuera de `core`; `execution` no importa `risk` ni `brokers`; `safety` no importa `brokers` ni `agents`; `agents` no importa `backtesting` ni `research`.
+Dependencias de capas verificadas con `import-linter` (17 contratos activos):
 
-Cada componente con estado posee **su propio fichero SQLite**: `state.db` (ledger y auditoría), `agent.db` (estado del agente y órdenes pendientes), `paper_broker.db` (órdenes, posiciones y caja), `execution.db` (rate limiter) y `trials.db` (registro de configuraciones). Cuatro dueños, sin interferencias destructivas.
+| Módulo | No puede importar |
+|--------|-------------------|
+| `risk` | nada fuera de `core` |
+| `strategies` | `execution`, `brokers`, `agents` |
+| `portfolio` | `brokers`, `agents`, `execution` |
+| `execution` | `risk`, `agents`, `brokers` |
+| `brokers` | `agents`, `portfolio` |
+| `safety` | `brokers`, `agents`, `portfolio` |
+| `agents` | `backtesting`, `research` |
+| `data` | `execution`, `agents` |
+| `backtesting` | `agents`, `brokers` |
+| `costs` | `agents`, `brokers`, `execution`, `ledger` |
+| `research` | `agents`, `brokers` |
+| `research.llm` | `brokers`, `execution`, `safety`, `agents` |
+| `research.robustness` | `brokers`, `execution`, `safety`, `agents` |
+| `monitoring` | `agents`, `brokers`, `execution` |
+| `dashboard` | `agents`, `brokers`, `execution` |
+
+Cada componente con estado posee **su propio fichero SQLite**: `state.db` (ledger y auditoría), `agent.db` (estado del agente y órdenes pendientes), `paper_broker.db` (órdenes, posiciones y caja), `execution.db` (rate limiter), `trials.db` (configuraciones evaluadas) y `proposals.db` (propuestas del LLM). Sin interferencias destructivas entre dueños.
 
 ---
 
@@ -299,3 +383,5 @@ Cada componente con estado posee **su propio fichero SQLite**: `state.db` (ledge
 - **`RiskEngine.evaluate` ignora el nivel de riesgo previo**: fija `current_level=NORMAL`, con lo que la histéresis de `recovery_days` está efectivamente inactiva.
 - **`SandboxedDataView` vive en `backtesting`** y `momentum.py` la referencia bajo `TYPE_CHECKING`. El agente define su propia vista duck-typed para no acoplar producción con simulación; el contrato de `import-linter` usa `allow_indirect_imports` por ese import transitivo de solo tipos. Moverla a `data/` sería la solución limpia.
 - La configuración del engine de Fase 0 es todavía un stub en el propio módulo (`_CONFIG_STUB`); el resto del sistema ya carga YAML desde `config/`.
+- **El researcher LLM (F8) está diseñado para Claude pero desacoplado del modelo.** El `researcher.py` llama a cualquier cliente que implemente la interfaz de mensajes; no hay dependencia dura de la API de Anthropic en el código de producción.
+- **Los criterios de robustez (F9) con datos reales esperan CONDICIONAL como mínimo.** Con datos sintéticos el veredicto es FRÁGIL por diseño (ruido puro → Sharpe ≈ 0). Las Partes B y C (Monte Carlo y PBO) están bien calibradas para datos reales con señal débil como el momentum.
