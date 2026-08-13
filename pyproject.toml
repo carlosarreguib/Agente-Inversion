@@ -181,3 +181,15 @@ forbidden_modules = [
     "qtrader.safety",
     "qtrader.agents",
 ]
+
+# T9: research.robustness tampoco puede importar brokers, execution, safety ni agents.
+[[tool.importlinter.contracts]]
+name = "research.robustness does not import brokers execution safety or agents"
+type = "forbidden"
+source_modules = ["qtrader.research.robustness"]
+forbidden_modules = [
+    "qtrader.brokers",
+    "qtrader.execution",
+    "qtrader.safety",
+    "qtrader.agents",
+]

@@ -910,6 +910,269 @@ def _cmd_run(args: argparse.Namespace) -> None:
         print("DETENIDO POR KILL SWITCH")
 
 
+def _cmd_robustness_report(args: argparse.Namespace) -> None:
+    """Genera el informe de robustez estadística (T9).
+
+    Ejecuta la sweep de sensibilidad sobre datos sintéticos, el Monte Carlo
+    y el PBO, y escribe el informe Markdown.
+    """
+    import math
+    from datetime import UTC, datetime, timedelta
+    from decimal import Decimal
+    from pathlib import Path
+
+    from qtrader.backtesting.engine import ApproveAllRisk, BacktestEngine, CostAwareSimBroker
+    from qtrader.backtesting.full_metrics import _daily_returns, compute_sharpe
+    from qtrader.backtesting.golden_strategy import (
+        GoldenEqualWeightPortfolio,
+        MomentumStrategy,
+    )
+    from qtrader.backtesting.synthetic import SyntheticMultiProvider
+    from qtrader.costs import CostsConfig
+    from qtrader.core.types import Instrument, InstrumentCategory, InstrumentType
+    from qtrader.research.dsr import compute_dsr
+    from qtrader.research.robustness.monte_carlo import run_full_monte_carlo
+    from qtrader.research.robustness.pbo import (
+        PBOResult,
+        build_sharpe_matrix_from_subperiods,
+        compute_pbo,
+    )
+    from qtrader.research.robustness.robustness_report import (
+        best_sharpe_oos,
+        compute_verdict,
+        render_report,
+    )
+    from qtrader.research.robustness.sensitivity import (
+        SensitivityBacktestRunner,
+        SensitivityConfig,
+        run_sensitivity_sweep,
+    )
+    from qtrader.research.trials_db import TrialsDB
+
+    as_of = date.today()
+    trials_db_path = Path(args.trials_db)
+    trials_db = TrialsDB(trials_db_path)
+    strategy_id = args.strategy
+    all_scenarios_passed = args.scenarios_passed
+
+    print(f"[robustness-report] Iniciando análisis de robustez para '{strategy_id}'...")
+    print(f"[robustness-report] trials.db: {trials_db_path}")
+    print()
+
+    # --- Configurar el backtest runner sintético ---
+    _SYMBOL_PARAMS = {
+        "SYNTH_A": {"drift": 0.0005, "vol": 0.010, "base_price": 150.0},
+        "SYNTH_B": {"drift": 0.0002, "vol": 0.015, "base_price": 80.0},
+        "SYNTH_C": {"drift": -0.0001, "vol": 0.013, "base_price": 200.0},
+        "SYNTH_D": {"drift": 0.0008, "vol": 0.020, "base_price": 50.0},
+        "SYNTH_E": {"drift": 0.0003, "vol": 0.009, "base_price": 120.0},
+    }
+    _DECLARED_ON = date(2022, 1, 1)
+    _INITIAL_EQUITY = Decimal("15000")
+    _START_DT = datetime(2022, 1, 3, tzinfo=UTC)
+
+    instruments = [
+        Instrument(
+            symbol=sym,
+            name="Synthetic ETF " + sym,
+            exchange="XNAS",
+            currency="USD",
+            category=InstrumentCategory.REGION,
+            instrument_type=InstrumentType.ETF,
+            ticker_proxy=sym,
+            ticker_ucits=sym,
+            declared_on=_DECLARED_ON,
+            spread_bps=5,
+        )
+        for sym in sorted(_SYMBOL_PARAMS)
+    ]
+    univ_dict: dict[str, object] = {i.symbol: i for i in instruments}
+
+    class _UM:
+        def get_universe(self, as_of: date) -> list[Instrument]:
+            return [i for i in instruments if i.declared_on <= as_of]
+        def get_instrument(self, symbol: str, as_of: date) -> Instrument | None:
+            val = univ_dict.get(symbol)
+            return val if isinstance(val, Instrument) else None
+
+    # Días de trading: 504 (2 años)
+    trading_days: list[date] = []
+    cur = date(2022, 1, 3)
+    while len(trading_days) < 504:
+        if cur.weekday() < 5:
+            trading_days.append(cur)
+        cur += timedelta(days=1)
+
+    class _SyntheticRunner:
+        """Backtest runner que usa datos sintéticos para cada config."""
+
+        def run(
+            self,
+            config: SensitivityConfig,
+            strategy_id: str,  # noqa: ARG002
+            trading_days: list[date],
+        ) -> tuple[Decimal, Decimal]:
+            provider = SyntheticMultiProvider(
+                base_seed=42,
+                start_date=_START_DT,
+                symbol_params=_SYMBOL_PARAMS,
+            )
+            sma = max(5, config.lookback_bars // 10)
+            strategy = MomentumStrategy(sma_period=sma)
+            portfolio = GoldenEqualWeightPortfolio(
+                initial_equity=_INITIAL_EQUITY,
+                n_slots=len(instruments),
+                min_order_eur=Decimal("1000"),
+            )
+            broker = CostAwareSimBroker(
+                costs_config=CostsConfig.from_yaml(
+                    Path(__file__).resolve().parents[2] / "config" / "costs.yaml"
+                ),
+                universe=univ_dict,
+            )
+            engine = BacktestEngine(
+                provider=provider,
+                universe_mgr=_UM(),  # type: ignore[arg-type]
+                strategy=strategy,
+                portfolio=portfolio,
+                risk=ApproveAllRisk(),
+                broker=broker,
+                trading_days=trading_days,
+                initial_equity=_INITIAL_EQUITY,
+            )
+            result = engine.run()
+            equity_curve = list(result.equity_curve)
+            if not equity_curve:
+                return Decimal("0"), Decimal("0")
+            returns = _daily_returns(equity_curve)
+            sharpe = compute_sharpe(returns)
+            # Max drawdown de la equity curve
+            peak = equity_curve[0][1]
+            mdd = Decimal("0")
+            for _, eq in equity_curve:
+                if eq > peak:
+                    peak = eq
+                if peak > Decimal("0"):
+                    dd = (eq - peak) / peak
+                    if dd < mdd:
+                        mdd = dd
+            return sharpe, mdd
+
+    print("[robustness-report] Parte A: sweep de sensibilidad (135 configs)...")
+    sensitivity_report = run_sensitivity_sweep(
+        trials_db=trials_db,
+        backtest_runner=_SyntheticRunner(),
+        trading_days=trading_days,
+        strategy_id=strategy_id,
+        as_of=as_of,
+    )
+    print(
+        f"[robustness-report] Sensibilidad: {sensitivity_report.n_passed}/"
+        f"{sensitivity_report.n_configs} configs robustas "
+        f"({sensitivity_report.pass_fraction:.1%})"
+    )
+
+    # --- Parte B: Monte Carlo sobre equity curve del mejor config ---
+    print("[robustness-report] Parte B: Monte Carlo...")
+    # Ejecutar un backtest con la config de referencia (12m/1m/weekly/20%)
+    provider_ref = SyntheticMultiProvider(
+        base_seed=42, start_date=_START_DT, symbol_params=_SYMBOL_PARAMS
+    )
+    portfolio_ref = GoldenEqualWeightPortfolio(
+        initial_equity=_INITIAL_EQUITY, n_slots=len(instruments),
+        min_order_eur=Decimal("1000"),
+    )
+    broker_ref = CostAwareSimBroker(
+        costs_config=CostsConfig.from_yaml(
+            Path(__file__).resolve().parents[2] / "config" / "costs.yaml"
+        ),
+        universe=univ_dict,
+    )
+    engine_ref = BacktestEngine(
+        provider=provider_ref,
+        universe_mgr=_UM(),  # type: ignore[arg-type]
+        strategy=MomentumStrategy(sma_period=25),
+        portfolio=portfolio_ref,
+        risk=ApproveAllRisk(),
+        broker=broker_ref,
+        trading_days=trading_days,
+        initial_equity=_INITIAL_EQUITY,
+    )
+    result_ref = engine_ref.run()
+    equity_curve_ref = list(result_ref.equity_curve)
+    fills_ref = list(result_ref.fills)
+    returns_ref = _daily_returns(equity_curve_ref)
+    # P&Ls de trades (aproximación: notional delta entre fills consecutivos)
+    trade_pnls: list[Decimal] = [
+        (f.price - Decimal("100")) * f.quantity for f in fills_ref if fills_ref
+    ]
+
+    mc_result = run_full_monte_carlo(
+        equity_curve=equity_curve_ref,
+        trade_pnls=trade_pnls,
+        initial_equity=_INITIAL_EQUITY,
+    )
+    print(
+        f"[robustness-report] Monte Carlo: P5(Sharpe)={float(mc_result.sharpe_pctls.p5):.4f}"
+    )
+
+    # --- Parte C: PBO ---
+    print("[robustness-report] Parte C: PBO (CSCV)...")
+    # Usar los Sharpes OOS de la sensitivity sweep para la matriz
+    config_sharpes: list[list[float]] = []
+    for r in sensitivity_report.results:
+        if r.sharpe_oos is not None:
+            config_sharpes.append([float(r.sharpe_oos)])
+        else:
+            config_sharpes.append([0.0])
+
+    sharpe_matrix = build_sharpe_matrix_from_subperiods(config_sharpes, s=8)
+    pbo_result = compute_pbo(sharpe_matrix, s=8)
+    print(f"[robustness-report] PBO={pbo_result.pbo:.3f} (is_overfit={pbo_result.is_overfit})")
+
+    # --- DSR global ---
+    completed = trials_db.fetch_completed(strategy_id)
+    sharpes_oos_db = [r.sharpe_oos for r in completed if r.sharpe_oos is not None]
+    t_obs = len(trading_days) // 5  # ~20% del período
+    dsr_result = compute_dsr(sharpes_oos_db, t_obs)
+    print(f"[robustness-report] DSR={float(dsr_result.dsr):.4f} (N={dsr_result.n_trials})")
+
+    # --- Veredicto ---
+    verdict = compute_verdict(
+        sensitivity=sensitivity_report,
+        monte_carlo=mc_result,
+        pbo=pbo_result,
+        dsr_value=dsr_result.dsr,
+        all_scenarios_passed=all_scenarios_passed,
+    )
+
+    # --- Renderizar ---
+    sharpe_bruto = best_sharpe_oos(sensitivity_report)
+    report_text = render_report(
+        verdict=verdict,
+        sensitivity=sensitivity_report,
+        monte_carlo=mc_result,
+        pbo=pbo_result,
+        dsr_value=dsr_result.dsr,
+        as_of=as_of,
+        sharpe_bruto=sharpe_bruto,
+    )
+
+    # --- Guardar ---
+    output_path = (
+        Path(args.output) if args.output
+        else Path("data/reports") / f"robustness_{as_of}.md"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(report_text, encoding="utf-8")
+
+    print()
+    print(f"Veredicto: {verdict.verdict}")
+    print(f"  {verdict.explanation}")
+    print()
+    print(f"Informe guardado en: {output_path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="qtrader",
@@ -1236,6 +1499,36 @@ def main() -> None:
         help="Filtro de estado (default: pending)",
     )
 
+    # research robustness-report — T9
+    robustness_parser = research_subs.add_parser(
+        "robustness-report",
+        help="Genera el informe de robustez estadística (T9)",
+    )
+    robustness_parser.add_argument(
+        "--trials-db",
+        default="data/trials.db",
+        metavar="PATH",
+        help="Ruta a trials.db (default: data/trials.db)",
+    )
+    robustness_parser.add_argument(
+        "--output",
+        default=None,
+        metavar="PATH",
+        help="Fichero de salida .md (default: data/reports/robustness_YYYY-MM-DD.md)",
+    )
+    robustness_parser.add_argument(
+        "--strategy",
+        default="momentum_sensitivity",
+        metavar="STRATEGY_ID",
+        help="ID de estrategia para buscar en trials.db (default: momentum_sensitivity)",
+    )
+    robustness_parser.add_argument(
+        "--scenarios-passed",
+        action="store_true",
+        default=False,
+        help="Indica que los escenarios adversos pasan (manual tras ejecutar pytest tests/robustness/)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "dashboard":
@@ -1279,6 +1572,8 @@ def main() -> None:
             _cmd_research_approve(args)
         elif args.research_command == "proposals":
             _cmd_research_proposals(args)
+        elif args.research_command == "robustness-report":
+            _cmd_robustness_report(args)
         else:
             research_parser.print_help()
             sys.exit(1)
